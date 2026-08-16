@@ -45,6 +45,39 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      # A man page with a roff error renders as garbage rather than failing, so
+      # nothing would notice without this.
+      - name: Lint the man page
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mandoc
+          mandoc -Tlint man/cdm.1
+
+      # Every documented verb must exist, and every verb must be documented.
+      # Docs drifting from behaviour is the failure this catches.
+      - name: Man page and CLI agree on the verb list
+        if: runner.os == 'Linux'
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          from cdm.cli import build_parser
+
+          sub = next(a for a in build_parser()._actions if hasattr(a, "choices") and a.choices)
+          verbs = set(sub.choices)
+
+          page = pathlib.Path("man/cdm.1").read_text()
+          body = page.split(".SH COMMANDS", 1)[1].split(".SH SCAN OPTIONS", 1)[0]
+          documented = set(re.findall(r'^\.BI? "?([a-z]+)', body, re.M))
+
+          missing = verbs - documented
+          extra = documented - verbs
+          if missing or extra:
+              raise SystemExit(
+                  f"man page out of sync: undocumented={sorted(missing)} "
+                  f"documented-but-absent={sorted(extra)}")
+          print(f"verbs agree: {sorted(verbs)}")
+          PY
+
       - name: Test with coverage
         run: pytest -q --cov=cdm --cov-report=term-missing --cov-fail-under=80
 
@@ -90,7 +123,22 @@ jobs:
           entry = next(n for n in names if n.endswith("entry_points.txt"))
           text = zf.read(entry).decode()
           assert "cdm = cdm.cli:main" in text, text
+          # The man page is installed data, not package data, so a packaging
+          # change can drop it silently while everything still imports.
+          assert any(n.endswith("share/man/man1/cdm.1") for n in names), names
           print("wheel contents OK")
+          PY
+
+      - name: Assert the sdist can rebuild and re-document the project
+        run: |
+          python - <<'PY'
+          import glob, tarfile
+          sdist = glob.glob("dist/*.tar.gz")[0]
+          names = tarfile.open(sdist).getnames()
+          for wanted in ("man/cdm.1", "docs/multi-host.md", "CONTRIBUTING.md",
+                         "tests/test_scan.py", "LICENSE"):
+              assert any(n.endswith(wanted) for n in names), f"{wanted} missing from sdist"
+          print("sdist contents OK")
           PY
 
       - name: Install the built wheel into a fresh venv

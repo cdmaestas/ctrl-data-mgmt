@@ -143,13 +143,29 @@ inodes is not what v1 is for.
 - **No remote scans.** Multi-host fan-out is the reason `host` exists, not
   something v1 does.
 
+## Documentation
+
+- **`man/cdm.1`** — the reference: every verb, every flag, exit statuses,
+  environment variables. Read it from a checkout with `man ./man/cdm.1`. It
+  installs to `share/man/man1`, though a pipx or venv install puts that inside
+  the venv rather than on your `MANPATH`.
+- **[docs/multi-host.md](docs/multi-host.md)** — design note on scanning many
+  hosts with `pdsh`, and why the index must never live on the shared filesystem.
+  Not implemented; recorded so the decisions that keep it cheap survive.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — setup, and the list of choices that
+  are deliberate rather than accidental.
+
 ## Development
 
 ```bash
 pip install -e ".[dev]"
 pytest
 ruff check .
+mandoc -Tlint man/cdm.1
 ```
+
+CI checks that the man page and the CLI agree on the verb list, so a new
+command cannot ship undocumented.
 
 ## Licence
 
