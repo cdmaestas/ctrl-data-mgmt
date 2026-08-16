@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ctrl-data-mgmt"
+version = "0.1.0"
+description = "A local file metadata catalog. Index what you own, find it again, spot the duplicates."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "cdmaestas" }]
+keywords = ["catalog", "filesystem", "index", "dedupe", "metadata", "local-first"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Filesystems",
+  "Topic :: Utilities",
+]
+# Deliberately zero runtime dependencies: sqlite3, hashlib and os.scandir are
+# all stdlib, so `pipx install ctrl-data-mgmt` cannot break an environment.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.5", "build>=1"]
+
+[project.urls]
+Homepage = "https://github.com/cdmaestas/ctrl-data-mgmt"
+Repository = "https://github.com/cdmaestas/ctrl-data-mgmt"
+Issues = "https://github.com/cdmaestas/ctrl-data-mgmt/issues"
+
+[project.scripts]
+cdm = "cdm.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["cdm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "W"]
