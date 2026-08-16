@@ -152,7 +152,11 @@ def test_progress_is_called_on_a_big_enough_tree(conn, tmp_path):
     seen = []
     scan_root(conn, HOST, root, progress=lambda stats: seen.append(stats.total))
     assert seen, "progress callback was never invoked"
-    assert all(n % PROGRESS_EVERY == 0 for n in seen)
+    # Counts advance and are not spammed. Exact multiples of PROGRESS_EVERY are
+    # not the contract: entries are recorded a directory at a time, so a single
+    # batch can cross the threshold by any amount.
+    assert seen == sorted(seen)
+    assert all(b - a >= PROGRESS_EVERY for a, b in zip(seen, seen[1:]))
 
 
 def test_scan_without_a_progress_callback_still_works(conn, tree):

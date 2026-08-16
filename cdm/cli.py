@@ -17,7 +17,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import db, hashing, paths, query
+from . import db, hashing, paths, probe, query
 from .exclude import Excluder
 from .scan import scan_root
 
@@ -110,6 +110,11 @@ def _report_scan(root: Path, stats, ex: Excluder) -> None:
     _clear_progress()
     _err(f"{root}: {stats.files} files, {stats.dirs} dirs, {stats.links} links "
          f"in {stats.elapsed:.1f}s")
+    if stats.threads > 1:
+        _err(f"  {stats.threads} walker threads")
+    if stats.resumed_from:
+        _err(f"  resumed from a checkpoint: {stats.resumed_from} "
+             f"director{'y' if stats.resumed_from == 1 else 'ies'} already done")
     if stats.hashed or stats.reused_hashes:
         _err(f"  hashed {stats.hashed}, reused {stats.reused_hashes} unchanged")
     if stats.pruned:
@@ -135,7 +140,9 @@ def cmd_scan(args, conn) -> int:
             rc = 2
             continue
         stats = scan_root(conn, host, root, hash_kind=kind, max_hash_bytes=cap,
-                          excluder=ex, progress=_progress_printer())
+                          excluder=ex, progress=_progress_printer(),
+                          threads=_threads_for(args, root),
+                          resume=not args.restart)
         _report_scan(root.resolve(), stats, ex)
     return rc
 
@@ -165,7 +172,9 @@ def cmd_rescan(args, conn) -> int:
             rc = 2
             continue
         stats = scan_root(conn, host, root, hash_kind=kind, max_hash_bytes=cap,
-                          excluder=ex, progress=_progress_printer())
+                          excluder=ex, progress=_progress_printer(),
+                          threads=_threads_for(args, root),
+                          resume=not args.restart)
         _report_scan(root, stats, ex)
     return rc
 
@@ -343,7 +352,21 @@ def cmd_doctor(args) -> int:
     return rc
 
 
+def _threads_for(args, root: Path) -> int:
+    """Explicit --threads wins; otherwise measure the filesystem and decide."""
+    if args.threads:
+        return max(1, args.threads)
+    result = probe.probe(root)
+    _err(f"  {result.describe()}")
+    return result.threads
+
+
 def _add_scan_flags(p) -> None:
+    p.add_argument("-j", "--threads", type=int, metavar="N",
+                   help="walker threads; default measures the filesystem "
+                        "(1 if local, up to 8 if remote)")
+    p.add_argument("--restart", action="store_true",
+                   help="ignore any checkpoint and scan from the beginning")
     p.add_argument("--checksum", action="store_true",
                    help="record a partial hash (ends + size) for dedupe")
     p.add_argument("--full-checksum", action="store_true",

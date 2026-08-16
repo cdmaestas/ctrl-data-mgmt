@@ -121,19 +121,57 @@ Rows carry a `host` column, populated with the local hostname. v1 only ever
 scans locally; the column is there so a later fan-out across machines is a merge
 of per-host indexes rather than a migration of an index you've come to rely on.
 
-## Speed
+## Speed and concurrency
 
-A stat-only pass runs at roughly 30k entries/second cold and 55k/second warm on
-a laptop — about 3 seconds for 99,000 entries. A rescan of a quiet tree costs
-one `stat` per file and reuses every hash.
+A stat-only pass runs at roughly 30k entries/second on a warm local disk — about
+3 seconds for 99,000 entries. A rescan of a quiet tree costs one `stat` per file
+and reuses every hash.
 
-Scans print a running count to stderr, but only when stderr is a terminal, so
-piping to a log does not produce thousands of progress lines.
+Remote filesystems are a different problem: at a realistic 0.5ms metadata round
+trip a single thread manages only ~1,600 entries/second, so the walk is
+**latency-bound**, and threads fix latency. Measured against simulated latency:
+
+| per-op latency | 8 threads | 32 threads |
+|---|---|---|
+| 0.1ms (fast) | 7.1× | 14.9× |
+| 0.5ms (typical remote) | 7.5× | 26.9× |
+| 2ms (loaded server) | 7.9× | 30.4× |
+
+On a warm **local** disk that same threading is a **4× slowdown** — no latency
+to hide, so concurrency only adds contention. So the thread count is measured
+rather than assumed: `cdm` times a sample of `stat` calls at startup and picks 1
+locally, up to 8 remotely, printing what it found. `-j N` overrides.
+
+The remote default stays conservative on purpose. On a shared cluster you are
+one of many users of the metadata servers, and being noticed by all of them is
+worse than a slower scan. Hashing is always single-threaded: it's bandwidth-bound,
+so concurrency buys little and saturating shared storage costs a lot.
+
+Scans print a running count to stderr, but only when stderr is a terminal.
 
 Note that on a parallel filesystem — Spectrum Scale, Lustre — a POSIX walk is
 the slow path by design; the native policy engine reads metadata far faster
-than `scandir` can. Pointing this at a filesystem with hundreds of millions of
-inodes is not what v1 is for.
+than `scandir` can at any thread count. See
+[docs/multi-host.md](docs/multi-host.md).
+
+## Interrupted scans resume
+
+Each directory is checkpointed in the same database transaction as the entries
+it contains, so a scan killed at any point leaves a consistent index — nothing
+is marked done that wasn't written. Re-running `cdm scan` on the same root picks
+up where it stopped:
+
+```console
+$ cdm scan /scratch/project      # killed part-way through
+$ cdm scan /scratch/project
+  resumed from a checkpoint: 4400 directories already done
+```
+
+Verified against a killed scan of 99,000 entries: the resumed index is identical
+to a clean one, path for path, and finishes faster than starting over.
+`--restart` discards the checkpoint. A checkpoint is only resumed when the hash
+kind matches, since resuming a stat-only scan with `--checksum` would leave half
+a tree hashed with nothing recording which half.
 
 ## Not in this version
 
