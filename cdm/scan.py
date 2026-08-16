@@ -50,12 +50,19 @@ def _existing_rows(conn, host: str, root: str) -> dict:
     return {r["path"]: r for r in rows}
 
 
+PROGRESS_EVERY = 5000
+
+
 def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
               max_hash_bytes: int | None = None, excluder: Excluder | None = None,
-              now: str | None = None) -> ScanStats:
+              now: str | None = None, progress=None) -> ScanStats:
     """Index everything under `root`, updating rows in place.
 
     `hash_kind` is None (stat only), 'partial' or 'full'.
+
+    `progress` is called with the running ScanStats every PROGRESS_EVERY
+    entries. A stat-only pass moves at tens of thousands of entries a second,
+    so a tree big enough to care about is minutes of total silence without it.
     """
     started = time.time()
     root = Path(root).expanduser().resolve()
@@ -124,6 +131,8 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
         ))
         if len(batch) >= 500:
             flush()
+        if progress is not None and stats.total % PROGRESS_EVERY == 0:
+            progress(stats)
 
     def walk(start: Path) -> None:
         # An explicit stack, not recursion: a tree deeper than the interpreter's

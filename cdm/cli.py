@@ -1,6 +1,6 @@
 """The command line.
 
-Verbs: scan, rescan, roots, find, dupes, stat, doctor.
+Verbs: scan, rescan, roots, forget, find, du, dupes, stat, doctor.
 
 Output goes to stdout as plain columns; anything the user did not ask for --
 skip counts, warnings, timings -- goes to stderr, so `cdm find ... | xargs` and
@@ -86,7 +86,28 @@ def _excluder(args) -> Excluder:
                     skip_credentials=not getattr(args, "no_skip_credentials", False))
 
 
+def _progress_printer():
+    """A progress callback, but only when someone is watching.
+
+    Writing \\r-updated counters into a log file or a CI transcript produces
+    thousands of useless lines, so this is a no-op unless stderr is a terminal.
+    """
+    if not sys.stderr.isatty():
+        return None
+
+    def show(stats) -> None:
+        print(f"\r  scanned {stats.total:,} entries...", end="", file=sys.stderr,
+              flush=True)
+    return show
+
+
+def _clear_progress() -> None:
+    if sys.stderr.isatty():
+        print("\r" + " " * 40 + "\r", end="", file=sys.stderr)
+
+
 def _report_scan(root: Path, stats, ex: Excluder) -> None:
+    _clear_progress()
     _err(f"{root}: {stats.files} files, {stats.dirs} dirs, {stats.links} links "
          f"in {stats.elapsed:.1f}s")
     if stats.hashed or stats.reused_hashes:
@@ -114,7 +135,7 @@ def cmd_scan(args, conn) -> int:
             rc = 2
             continue
         stats = scan_root(conn, host, root, hash_kind=kind, max_hash_bytes=cap,
-                          excluder=ex)
+                          excluder=ex, progress=_progress_printer())
         _report_scan(root.resolve(), stats, ex)
     return rc
 
@@ -144,7 +165,7 @@ def cmd_rescan(args, conn) -> int:
             rc = 2
             continue
         stats = scan_root(conn, host, root, hash_kind=kind, max_hash_bytes=cap,
-                          excluder=ex)
+                          excluder=ex, progress=_progress_printer())
         _report_scan(root, stats, ex)
     return rc
 
@@ -223,6 +244,39 @@ def cmd_dupes(args, conn) -> int:
             for row in g["members"]:
                 print(f"    {row['path']}")
     _err(f"reclaimable: {human_size(total)}")
+    return 0
+
+
+@with_index
+def cmd_du(args, conn) -> int:
+    rows = query.disk_usage(conn, args.path, depth=args.depth,
+                            host=None if args.all_hosts else paths.this_host(),
+                            limit=args.limit)
+    if not rows:
+        _err(f"cdm: nothing indexed under {args.path}. Scan it first.")
+        return 1
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+
+    width = max(len(human_size(r["bytes"])) for r in rows)
+    for r in rows:
+        print(f"{human_size(r['bytes']):>{width}}  {r['files']:>8} files  {r['path']}")
+    total = sum(r["bytes"] for r in rows)
+    _err(f"total shown: {human_size(total)}")
+    return 0
+
+
+@with_index
+def cmd_forget(args, conn) -> int:
+    host = paths.this_host()
+    removed, known = query.forget_root(conn, args.path, host)
+    if not known:
+        _err(f"cdm: not a known root: {args.path}")
+        _err("     `cdm roots` lists what is indexed.")
+        return 1
+    _err(f"forgot {args.path}: {removed} row(s) removed from the index "
+         f"(nothing on disk was touched)")
     return 0
 
 
@@ -349,6 +403,19 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--verify", action="store_true",
                    help="re-hash partial-hash candidates in full to confirm")
     d.set_defaults(func=cmd_dupes)
+
+    u = sub.add_parser("du", help="disk usage by subdirectory, answered from the index")
+    u.add_argument("path", nargs="?", default=".")
+    u.add_argument("-d", "--depth", type=int, default=1,
+                   help="how many levels below PATH to group at (default 1)")
+    u.add_argument("--limit", type=int, default=40)
+    u.add_argument("--all-hosts", action="store_true")
+    u.add_argument("--json", action="store_true")
+    u.set_defaults(func=cmd_du)
+
+    g = sub.add_parser("forget", help="drop a root and its rows from the index")
+    g.add_argument("path")
+    g.set_defaults(func=cmd_forget)
 
     t = sub.add_parser("stat", help="what the index knows about one path")
     t.add_argument("path")

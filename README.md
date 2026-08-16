@@ -46,10 +46,20 @@ cdm roots                     # what's watched, and when it was last scanned
 |---|---|
 | `cdm scan PATH...` | add a root and index it |
 | `cdm rescan [PATH...]` | re-index; unchanged files cost one stat each |
+| `cdm forget PATH` | drop a root and its rows; touches nothing on disk |
 | `cdm find [filters]` | query the index |
+| `cdm du [PATH]` | disk usage by subdirectory, answered from the index |
 | `cdm dupes` | files that look identical |
 | `cdm stat PATH` | everything the index knows about one file |
 | `cdm doctor` | index health, stale hashes, roots that have gone away |
+
+`du` answers from the index rather than the filesystem, so it returns instantly
+on a tree that real `du` would spend minutes walking:
+
+```bash
+cdm du ~/work              # biggest subdirectories, one level down
+cdm du ~/work --depth 2    # two levels
+```
 
 `find` filters compose, and all of them are optional:
 
@@ -110,6 +120,20 @@ revealing than most file contents. `CDM_DATA_DIR` or `CDM_INDEX` override it.
 Rows carry a `host` column, populated with the local hostname. v1 only ever
 scans locally; the column is there so a later fan-out across machines is a merge
 of per-host indexes rather than a migration of an index you've come to rely on.
+
+## Speed
+
+A stat-only pass runs at roughly 30k entries/second cold and 55k/second warm on
+a laptop — about 3 seconds for 99,000 entries. A rescan of a quiet tree costs
+one `stat` per file and reuses every hash.
+
+Scans print a running count to stderr, but only when stderr is a terminal, so
+piping to a log does not produce thousands of progress lines.
+
+Note that on a parallel filesystem — Spectrum Scale, Lustre — a POSIX walk is
+the slow path by design; the native policy engine reads metadata far faster
+than `scandir` can. Pointing this at a filesystem with hundreds of millions of
+inodes is not what v1 is for.
 
 ## Not in this version
 

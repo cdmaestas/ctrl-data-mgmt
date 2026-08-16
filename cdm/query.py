@@ -126,6 +126,68 @@ def verify_group(group) -> list[list[str]]:
     return [paths for paths in by_digest.values() if len(paths) > 1]
 
 
+def disk_usage(conn, under: str, *, depth: int = 1, host=None, limit: int = 40):
+    """Sum file sizes by subdirectory, `du -d N` answered from the index.
+
+    Rolled up in Python rather than SQL because the grouping key is "the path
+    component `depth` levels below `under`", which SQL cannot express without
+    recursion. Rows stream, so memory is bounded by the number of distinct
+    subdirectories rather than by the number of files.
+
+    Directory rows are excluded from the sum -- a directory's own inode size is
+    not the space its contents occupy, and counting both double-counts.
+    """
+    base = Path(under).expanduser().resolve()
+    prefix = str(base).rstrip("/") + "/"
+    clauses = ["type = 'file'", "path LIKE ? ESCAPE '\\'"]
+    params: list = [_like_prefix(prefix)]
+    if host:
+        clauses.append("host = ?")
+        params.append(host)
+
+    sql = f"SELECT path, size FROM files WHERE {' AND '.join(clauses)}"
+    totals: dict[str, list[int]] = {}
+    for path, size in conn.execute(sql, params):
+        rest = path[len(prefix):].split("/")
+        key = str(base.joinpath(*rest[:depth])) if len(rest) > depth else path
+        entry = totals.setdefault(key, [0, 0])
+        entry[0] += size
+        entry[1] += 1
+
+    rows = [{"path": k, "bytes": v[0], "files": v[1]} for k, v in totals.items()]
+    rows.sort(key=lambda r: r["bytes"], reverse=True)
+    return rows[:limit]
+
+
+def _like_prefix(prefix: str) -> str:
+    """Escape a path for use as a LIKE prefix.
+
+    A path containing % or _ would otherwise turn into a wildcard and match
+    directories that merely resemble it.
+    """
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "%"
+
+
+def forget_root(conn, path: str, host: str) -> tuple[int, bool]:
+    """Drop a root and everything indexed under it.
+
+    Returns (rows removed, whether the root was known). Touches only the index;
+    nothing on disk is read or written.
+    """
+    root_key = str(Path(path).expanduser().resolve())
+    known = conn.execute(
+        "SELECT 1 FROM roots WHERE host = ? AND path = ?", (host, root_key)
+    ).fetchone() is not None
+
+    removed = conn.execute(
+        "DELETE FROM files WHERE host = ? AND root = ?", (host, root_key)
+    ).rowcount
+    conn.execute("DELETE FROM roots WHERE host = ? AND path = ?", (host, root_key))
+    conn.commit()
+    return max(removed, 0), known
+
+
 def stat_one(conn, path: str, host=None):
     clauses, params = ["path = ?"], [str(Path(path).expanduser().resolve())]
     if host:
