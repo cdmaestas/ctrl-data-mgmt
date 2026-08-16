@@ -58,3 +58,14 @@ Explain why, not what — the diff already says what. If a choice has a
 non-obvious reason (a measurement, a filesystem behaviour, a locking
 constraint), that reason belongs in the commit message or a comment, because it
 is the thing nobody can reconstruct later.
+
+## Releasing
+
+See [docs/releasing.md](docs/releasing.md). The short version: bump the version
+in `pyproject.toml`, tag it `v<version>`, push the tag. The workflow refuses a
+tag that disagrees with the packaged version, publishes to TestPyPI first, then
+installs that published wheel on a clean machine and runs it before the real
+upload is even offered.
+
+Do a `workflow_dispatch` dry run before any first-of-its-kind release. PyPI
+never lets a filename be reused, so a mistake is permanent.
