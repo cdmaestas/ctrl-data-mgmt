@@ -75,6 +75,15 @@ Accepted by
 and
 .BR rescan .
 .TP
+.BR \-j " " \-\-threads " N"
+Number of walker threads. The default is measured, not guessed: a sample of
+stat calls is timed at startup and the tool picks 1 thread for a local
+filesystem and up to 8 for a remote one. See
+.BR CONCURRENCY .
+.TP
+.B \-\-restart
+Ignore any checkpoint from an interrupted scan and start from the beginning.
+.TP
 .B \-\-checksum
 Record a partial hash: the first and last 64 KiB plus the exact byte count.
 Intended for duplicate detection.
@@ -170,6 +179,61 @@ Each hash also records the size and mtime it was computed against. A file
 modified after it was hashed is reported as
 .B STALE
 rather than silently returning a hash that is no longer true.
+.SH CONCURRENCY
+Walking a filesystem is latency\-bound, not CPU\-bound, and CPython releases the
+interpreter lock around
+.BR scandir (3)
+and
+.BR stat (2),
+so threads help here despite the usual advice about the GIL.
+.PP
+How much they help depends entirely on how far away the filesystem is.
+Measured against simulated metadata latency:
+.PP
+.RS
+.TS
+l l l.
+per\-operation latency	8 threads	32 threads
+0.1ms (fast)	7.1x	14.9x
+0.5ms (typical remote)	7.5x	26.9x
+2ms (loaded server)	7.9x	30.4x
+.TE
+.RE
+.PP
+On a warm local disk the same threading is a
+.B 4x slowdown
+\(em there is no latency to hide, so all concurrency adds is contention. That
+is why the default is measured rather than fixed, and why it is 1 locally.
+.PP
+The remote default is deliberately conservative. On a shared cluster you are
+one of many users of the metadata servers, and enough concurrent traffic to be
+noticed by everyone else is a worse outcome than a slower scan. Raise it with
+.B \-j
+when you know the system can take it.
+.PP
+Hashing is always single\-threaded. It is bandwidth\-bound rather than
+latency\-bound, so concurrency buys little and saturating shared storage costs a
+lot.
+.SH RESUMING
+An interrupted scan can be resumed. Each directory is checkpointed in the same
+database transaction as the entries it contains, so a scan killed at any point
+leaves the index consistent: every checkpointed directory has its rows, and
+nothing is marked done that was not written.
+.PP
+Re\-running
+.B "cdm scan"
+on the same root picks up where it left off and skips the directories already
+recorded. A resumed scan is faster than a fresh one, not slower. Use
+.B \-\-restart
+to discard the checkpoint.
+.PP
+A checkpoint is only resumed when the hash kind matches. Resuming a stat\-only
+scan with
+.B \-\-checksum
+would leave part of the tree hashed and part not, with nothing recording which
+part.
+.PP
+Checkpoints are deleted when a scan completes.
 .SH EXCLUSIONS
 By default
 .B cdm

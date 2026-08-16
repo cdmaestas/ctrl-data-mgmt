@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import paths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots (
@@ -54,6 +54,34 @@ CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
 CREATE INDEX IF NOT EXISTS idx_files_name  ON files(name);
 CREATE INDEX IF NOT EXISTS idx_files_hash  ON files(hash_kind, hash, size);
 CREATE INDEX IF NOT EXISTS idx_files_root  ON files(host, root);
+-- Resume reads back the directory tree by parent; without this it is a table
+-- scan per lookup and resuming costs more than rescanning from scratch.
+CREATE INDEX IF NOT EXISTS idx_files_parent ON files(host, root, type, seen_at);
+
+-- Checkpointing, so an interrupted scan can resume instead of restarting.
+--
+-- A row in scan_dirs means "this directory's entries are committed". It is
+-- written in the SAME transaction as those entries, which is the whole point:
+-- commit them separately and a crash between the two leaves a directory
+-- marked done whose files were never recorded, and the resumed scan skips it
+-- forever.
+CREATE TABLE IF NOT EXISTS scans (
+    host        TEXT NOT NULL,
+    root        TEXT NOT NULL,
+    scan_id     TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    hash_kind   TEXT,
+    PRIMARY KEY (host, root, scan_id)
+);
+
+CREATE TABLE IF NOT EXISTS scan_dirs (
+    host    TEXT NOT NULL,
+    root    TEXT NOT NULL,
+    scan_id TEXT NOT NULL,
+    path    TEXT NOT NULL,
+    PRIMARY KEY (host, root, scan_id, path)
+);
 """
 
 
