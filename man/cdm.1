@@ -61,6 +61,11 @@ Requires a previous scan with
 .B \-\-checksum
 or
 .BR \-\-full\-checksum .
+With
+.B \-\-verify
+any file that cannot be read is reported and excluded from the totals, and the
+command exits non-zero: a verification that could not read a file has not
+verified anything about it.
 .TP
 .BI "stat " path
 Print everything the index records about one path, including whether its hash
@@ -68,7 +73,9 @@ has gone stale.
 .TP
 .B doctor
 Report index location, permissions, entry and hash counts, stale hashes, and
-roots that have disappeared from disk.
+roots that have disappeared from disk. Exits non-zero if the index, its
+write-ahead log, its shared-memory file or the data directory are readable by
+other users, so it can gate a script rather than merely mentioning the problem.
 .SH SCAN OPTIONS
 Accepted by
 .B scan
@@ -268,6 +275,17 @@ filename you own is more revealing than most file contents. Defaults to
 when
 .B XDG_DATA_HOME
 is unset.
+.TP
+.IR index.db\-wal ", " index.db\-shm
+SQLite's write\-ahead log and shared\-memory file. They hold the same filename
+data as the index and are created by SQLite itself, so they are checked and
+corrected to 0600 as well.
+.PP
+If a mode cannot be set \(em some filesystems do not support
+.BR chmod (2)
+\(em the tool prints a warning naming the file rather than continuing silently.
+The scan still runs; whether that is acceptable is a decision only you can make,
+which is why it is reported instead of assumed either way.
 .SH ENVIRONMENT
 .TP
 .B CDM_DATA_DIR
@@ -291,8 +309,11 @@ Nothing found, or an unhealthy index \(em an unknown path to
 .BR stat ,
 an unscanned path to
 .BR du ,
-a missing index or a vanished root to
-.BR doctor .
+a missing index, a vanished root, or permissions that let other users read the
+index to
+.BR doctor ,
+or files that could not be read to
+.BR "dupes \-\-verify" .
 .TP
 .B 2
 Usage error: an unparseable size or time, or a path that is not a directory.

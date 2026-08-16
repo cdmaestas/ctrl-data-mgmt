@@ -90,25 +90,29 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     db = Path(path) if path else paths.index_path()
     if db.parent != Path("."):
         db.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(db.parent, 0o700)
-        except OSError:
-            pass
+        paths.warn(paths.enforce_mode(db.parent, paths.DIR_MODE))
 
-    existed = db.exists()
+    # Create the file ourselves, at 0600, instead of letting sqlite3 create it
+    # at the umask default. With umask 022 that default is 0644, and the window
+    # between creation and a later chmod is a window where every user on the
+    # machine can read the index.
+    if not db.exists():
+        os.close(os.open(str(db), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
-    if not existed:
-        # Create the file with a restrictive mode before anything is written to
-        # it, rather than chmod-ing after the first write leaves a window where
-        # a filename list is readable at the umask default.
-        try:
-            os.chmod(db, 0o600)
-        except OSError:
-            pass
+    paths.warn(paths.enforce_mode(db, paths.FILE_MODE))
 
+    # ORDER MATTERS AND IS NOT COSMETIC. SQLite copies the main database file's
+    # permissions onto -wal and -shm when it creates them, so the mode above
+    # must be correct BEFORE journal_mode=WAL runs. Enable WAL first and those
+    # two files are created 0644 under a default umask -- holding the same
+    # filename data the index exists to protect. Verified by test.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    for sidecar in (db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+        if sidecar.exists():
+            paths.warn(paths.enforce_mode(sidecar, paths.FILE_MODE))
     _migrate(conn)
     return conn
 

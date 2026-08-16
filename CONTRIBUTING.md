@@ -9,6 +9,17 @@ pytest
 ruff check .
 ```
 
+Enable the pre-commit hook once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It runs ruff, the tests, and a check that the man page still documents every
+verb — about a second in total. `git commit --no-verify` bypasses it for a WIP
+commit. Hooks live in `.githooks/` rather than `.git/hooks/` so they are version
+controlled and everyone gets the same ones.
+
 No runtime dependencies, and it stays that way. `sqlite3`, `hashlib` and
 `os.scandir` are standard library; anything that would need a wheel needs an
 argument first.
@@ -41,6 +52,13 @@ Change these only deliberately, and update the man page when you do:
   staleness is detectable rather than silently wrong.
 - **The index is 0600 in a 0700 directory.** CI asserts this independently of
   the unit tests.
+- **In `db.connect`, the file's mode is fixed BEFORE `journal_mode=WAL` runs.**
+  SQLite copies the database's permissions onto `-wal` and `-shm` when it
+  creates them, so swapping those two lines silently leaks the same filename
+  data at 0644. `tests/test_permissions.py` asserts both the fix and that the
+  underlying failure mode still exists.
+- **A mode that cannot be set is reported, not ignored and not fatal.** See
+  [docs/adr/0001](docs/adr/0001-warn-rather-than-refuse-on-unenforceable-permissions.md).
 - **stdout is data, stderr is everything else**, so pipelines stay clean.
 
 ## Documentation

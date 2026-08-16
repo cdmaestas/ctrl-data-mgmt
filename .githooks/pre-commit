@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Pre-commit gate: lint, tests, and a check that documentation still matches
+# the CLI. The suite runs in about a second, so there is no excuse for pushing
+# a red commit and finding out from CI six minutes later.
+#
+# Install:  git config core.hooksPath .githooks
+# Bypass:   git commit --no-verify   (for a WIP commit on a branch)
+#
+# set -e matters here: without it a failing check prints its error and the
+# commit proceeds anyway, which is the exact failure this hook exists to stop.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+python="${PYTHON:-python3}"
+if [ -x .venv/bin/python ]; then
+  python=.venv/bin/python
+fi
+
+fail() { printf '\npre-commit: %s\n' "$1" >&2; exit 1; }
+
+if ! "$python" -c "import cdm" 2>/dev/null; then
+  echo "pre-commit: cdm not importable by $python; skipping checks." >&2
+  echo "            run 'pip install -e \".[dev]\"' to enable them." >&2
+  exit 0
+fi
+
+echo "pre-commit: ruff"
+"$python" -m ruff check . || fail "lint failed"
+
+echo "pre-commit: pytest"
+"$python" -m pytest -q || fail "tests failed"
+
+# Docs drifting from behaviour is the failure mode this repo is most prone to,
+# since the man page is hand-written.
+echo "pre-commit: man page covers every verb"
+"$python" - <<'PY' || fail "man page is out of sync with the CLI"
+import re, pathlib, sys
+from cdm.cli import build_parser
+
+sub = next(a for a in build_parser()._actions if hasattr(a, "choices") and a.choices)
+verbs = set(sub.choices)
+body = pathlib.Path("man/cdm.1").read_text()
+body = body.split(".SH COMMANDS", 1)[1].split(".SH SCAN OPTIONS", 1)[0]
+documented = set(re.findall(r'^\.BI? "?([a-z]+)', body, re.M))
+missing, extra = verbs - documented, documented - verbs
+if missing or extra:
+    print(f"undocumented={sorted(missing)} documented-but-absent={sorted(extra)}",
+          file=sys.stderr)
+    sys.exit(1)
+PY
+
+echo "pre-commit: ok"

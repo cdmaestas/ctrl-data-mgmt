@@ -53,6 +53,22 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq mandoc
           mandoc -Tlint man/cdm.1
 
+      # A hook that loses its executable bit or its shebang still sits in the
+      # tree looking like protection while silently doing nothing.
+      - name: Hooks are executable and not no-ops
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for hook in .githooks/*; do
+            [ -x "$hook" ] || { echo "$hook is not executable" >&2; exit 1; }
+            head -1 "$hook" | grep -q '^#!' || { echo "$hook has no shebang" >&2; exit 1; }
+            bash -n "$hook" || { echo "$hook has a syntax error" >&2; exit 1; }
+            grep -q 'set -e' "$hook" || {
+              echo "$hook does not set -e; a failing check would not stop the commit" >&2
+              exit 1; }
+            echo "$hook ok"
+          done
+
       # Every documented verb must exist, and every verb must be documented.
       # Docs drifting from behaviour is the failure this catches.
       - name: Man page and CLI agree on the verb list

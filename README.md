@@ -117,6 +117,13 @@ One SQLite file at `$XDG_DATA_HOME/ctrl-data-mgmt/index.db` (`~/.local/share/...
 mode `0600`, in a `0700` directory — an index of every filename you own is more
 revealing than most file contents. `CDM_DATA_DIR` or `CDM_INDEX` override it.
 
+That applies to SQLite's `-wal` and `-shm` sidecars too: they hold the same
+filename data, SQLite creates them itself, and they inherit the database's mode
+only if it is already correct when the write-ahead log is enabled. If a mode
+can't be set — some filesystems don't support `chmod` — you get a warning naming
+the file rather than silence, and `cdm doctor` exits non-zero so a script can
+gate on it.
+
 Rows carry a `host` column, populated with the local hostname. v1 only ever
 scans locally; the column is there so a later fan-out across machines is a merge
 of per-host indexes rather than a migration of an index you've come to rely on.
@@ -199,6 +206,7 @@ a tree hashed with nothing recording which half.
 
 ```bash
 pip install -e ".[dev]"
+git config core.hooksPath .githooks   # once per clone
 pytest
 ruff check .
 mandoc -Tlint man/cdm.1

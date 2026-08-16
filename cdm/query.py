@@ -109,21 +109,30 @@ def dupe_groups(conn, *, host=None, min_size=1, limit=100):
     return out
 
 
-def verify_group(group) -> list[list[str]]:
+def verify_group(group) -> tuple[list[list[str]], list[str]]:
     """Re-hash a partial-hash group in full and split it into true duplicates.
 
-    A partial hash proposes; this confirms. Returns one list of paths per set of
-    genuinely identical files (singletons dropped -- they were false matches).
+    A partial hash proposes; this confirms. Returns (confirmed groups,
+    unreadable paths) -- one list of paths per set of genuinely identical files
+    (singletons dropped, they were false matches), plus everything that could
+    not be read.
+
+    The unreadable list is returned rather than skipped because silently
+    dropping a file turns "these two are duplicates" into "these two are the
+    ones I happened to be able to open", and the caller cannot tell the
+    difference. On a shared filesystem, unreadable files are normal.
     """
     by_digest: dict[str, list[str]] = {}
+    unreadable: list[str] = []
     for row in group["members"]:
         path = Path(row["path"])
         try:
             digest = hashing.full_hash(path)
         except OSError:
-            continue  # vanished or unreadable since the scan; not a duplicate claim
+            unreadable.append(str(path))
+            continue
         by_digest.setdefault(digest, []).append(str(path))
-    return [paths for paths in by_digest.values() if len(paths) > 1]
+    return [paths for paths in by_digest.values() if len(paths) > 1], unreadable
 
 
 def disk_usage(conn, under: str, *, depth: int = 1, host=None, limit: int = 40):
