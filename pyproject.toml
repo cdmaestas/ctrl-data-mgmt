@@ -41,6 +41,13 @@ cdm = "cdm.cli:main"
 [tool.setuptools.packages.find]
 include = ["cdm*"]
 
+# Installs to <prefix>/share/man/man1. Note that a pipx or venv install puts
+# this inside the venv rather than on the system MANPATH, so `man cdm` only
+# works after a system-wide install or with MANPATH pointed at the venv.
+# `man ./man/cdm.1` always works from a checkout.
+[tool.setuptools.data-files]
+"share/man/man1" = ["man/cdm.1"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

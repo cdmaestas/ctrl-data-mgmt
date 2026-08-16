@@ -1,0 +1,304 @@
+.TH CDM 1 "2026-08-15" "ctrl-data-mgmt 0.1.0" "User Commands"
+.SH NAME
+cdm \- local file metadata catalog
+.SH SYNOPSIS
+.B cdm
+.I command
+.RI [ options ]
+.RI [ path ...]
+.SH DESCRIPTION
+.B cdm
+indexes file metadata \(em size, timestamps, inode, and optionally a content
+hash \(em into a local SQLite database, then answers questions about it without
+touching the filesystem again.
+.PP
+Roots are explicit. There is no default
+.B $HOME
+crawl and no daemon. Nothing leaves the machine, and the tool has no runtime
+dependencies beyond the Python standard library.
+.PP
+Queries are answered from the index, so
+.B cdm du
+over a hundred thousand files returns in a fraction of a second where
+.BR du (1)
+must re-walk the tree every time. The trade is that the index is only as fresh
+as the last
+.BR "cdm rescan" .
+.SH COMMANDS
+.TP
+.BI "scan " path ...
+Add each
+.I path
+as a root and index everything beneath it. Re-running on a known root behaves
+as
+.BR rescan .
+.TP
+.BI "rescan " [ path ...]
+Re-index the named roots, or every known root if none are named. Files whose
+size and mtime are unchanged keep their existing hash, so a quiet tree costs
+one
+.BR stat (2)
+per file.
+.TP
+.B roots
+List indexed roots with their entry counts and last scan time.
+.TP
+.BI "forget " path
+Remove a root and all of its rows from the index. Nothing on disk is read,
+written, or deleted.
+.TP
+.BI "find " [ options ]
+Query the index. All filters are optional and combine with AND.
+.TP
+.BI "du " [ path ]
+Sum file sizes by subdirectory, answered from the index. Directory inodes are
+excluded from the totals, since a directory's own size is not the space its
+contents occupy.
+.TP
+.BI "dupes " [ options ]
+Report files that share a hash of the same kind and an identical size.
+Requires a previous scan with
+.B \-\-checksum
+or
+.BR \-\-full\-checksum .
+.TP
+.BI "stat " path
+Print everything the index records about one path, including whether its hash
+has gone stale.
+.TP
+.B doctor
+Report index location, permissions, entry and hash counts, stale hashes, and
+roots that have disappeared from disk.
+.SH SCAN OPTIONS
+Accepted by
+.B scan
+and
+.BR rescan .
+.TP
+.B \-\-checksum
+Record a partial hash: the first and last 64 KiB plus the exact byte count.
+Intended for duplicate detection.
+.TP
+.B \-\-full\-checksum
+Record a hash of every byte. Intended for integrity checking.
+.TP
+.BI \-\-max\-hash\-size " size"
+Do not hash files larger than
+.IR size .
+They are still indexed, just without a hash.
+.TP
+.BI \-\-exclude " glob"
+Skip paths matching
+.IR glob .
+May be given more than once.
+.TP
+.B \-\-no\-skip\-credentials
+Index credential paths, which are excluded by default. See
+.BR EXCLUSIONS .
+.SH FIND OPTIONS
+.TP
+.BI \-\-name " glob"
+Match the filename. Uses SQL
+.B GLOB
+semantics: shell wildcards, case sensitive.
+.TP
+.BI \-\-type " {file|dir|link}"
+Restrict to one entry type.
+.TP
+.BI \-\-larger\-than " size" ", " \-\-smaller\-than " size"
+Filter on size. See
+.BR "SIZES AND TIMES" .
+.TP
+.BI \-\-modified\-after " when" ", " \-\-modified\-before " when"
+Filter on mtime.
+.TP
+.BI \-\-root " path"
+Restrict results to one root.
+.TP
+.BI \-\-order " {size|mtime|name|path}"
+Sort order. Default
+.BR size ,
+descending.
+.TP
+.BI \-\-limit " n"
+Maximum rows. Default 100.
+.TP
+.B \-\-all\-hosts
+Include rows recorded by other hosts. By default only the local host's rows
+are considered.
+.TP
+.BR \-q ", " \-\-quiet
+Print bare paths only, one per line, for piping.
+.TP
+.B \-\-json
+Print rows as JSON.
+.SH SIZES AND TIMES
+Sizes accept an optional binary unit:
+.BR 4096 ,
+.BR 1k ,
+.BR 100M ,
+.BR 2.5G ,
+.BR 1T .
+Units are powers of 1024.
+.PP
+Times accept a relative span \(em
+.BR 30s ,
+.BR 10m ,
+.BR 24h ,
+.BR 7d ,
+.B 2w
+\(em or an absolute date as
+.BR YYYY\-MM\-DD .
+.SH HASHING
+Two hash kinds exist because there are two different questions, and each row
+records which kind it holds so the two can never be confused.
+.TP
+.B partial
+Answers \fIare these probably the same file\fR. Reads 64 KiB from each end and
+mixes in the byte count. On a large tree this is the difference between minutes
+and hours.
+.TP
+.B full
+Answers \fIis this byte\-for\-byte what I recorded\fR. Reads everything. No
+shortcut exists.
+.PP
+.B "cdm dupes \-\-verify"
+re\-reads partial\-hash candidates in full and reports only groups that survive:
+the partial hash proposes, the full hash confirms.
+.PP
+Each hash also records the size and mtime it was computed against. A file
+modified after it was hashed is reported as
+.B STALE
+rather than silently returning a hash that is no longer true.
+.SH EXCLUSIONS
+By default
+.B cdm
+skips credential paths, among them
+.BR .ssh ,
+.BR .gnupg ,
+.BR .aws ,
+.BR .kube ,
+keychains, browser profiles, and files matching
+.B *.pem
+or
+.BR *.key .
+.PP
+Symlinks are recorded as entries of type
+.B link
+but are never followed; a link into
+.B /proc
+would otherwise turn a scan into an unbounded walk.
+.PP
+.B .gitignore
+is deliberately not honoured. It describes what git should ignore, not what
+exists on disk, and disk usage is one of the questions this tool answers.
+.PP
+Every skipped path is counted and reported. An index that silently omits
+entries is worse than one that refuses out loud.
+.SH FILES
+.TP
+.I $XDG_DATA_HOME/ctrl-data-mgmt/index.db
+The index. Created mode 0600 inside a 0700 directory, because a list of every
+filename you own is more revealing than most file contents. Defaults to
+.I ~/.local/share/ctrl-data-mgmt/index.db
+when
+.B XDG_DATA_HOME
+is unset.
+.SH ENVIRONMENT
+.TP
+.B CDM_DATA_DIR
+Override the data directory.
+.TP
+.B CDM_INDEX
+Override the full path to the index file.
+.TP
+.B CDM_HOST
+Override the hostname recorded in the
+.B host
+column. Useful when a shared filesystem should be attributed to one logical
+name rather than to whichever node performed the scan.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Nothing found, or an unhealthy index \(em an unknown path to
+.BR stat ,
+an unscanned path to
+.BR du ,
+a missing index or a vanished root to
+.BR doctor .
+.TP
+.B 2
+Usage error: an unparseable size or time, or a path that is not a directory.
+.TP
+.B 3
+.B rescan
+was asked to run with no roots recorded.
+.TP
+.B 130
+Interrupted. Rows already committed are kept; the interrupted root keeps its
+previous last\-scan time.
+.SH EXAMPLES
+Index two trees and record dedupe hashes:
+.PP
+.RS
+.EX
+cdm scan ~/work ~/datasets \-\-checksum
+.EE
+.RE
+.PP
+Find large files nobody has touched this quarter:
+.PP
+.RS
+.EX
+cdm find \-\-larger\-than 500M \-\-modified\-before 90d
+.EE
+.RE
+.PP
+See what is consuming a tree, two levels down:
+.PP
+.RS
+.EX
+cdm du /scratch/project \-\-depth 2
+.EE
+.RE
+.PP
+Confirm duplicates before acting on them:
+.PP
+.RS
+.EX
+cdm dupes \-\-min\-size 100M \-\-verify
+.EE
+.RE
+.PP
+Feed results to another tool:
+.PP
+.RS
+.EX
+cdm find \-\-name '*.csv' \-\-quiet | xargs wc \-l
+.EE
+.RE
+.SH LIMITATIONS
+The scanner walks POSIX directories with
+.BR scandir (3).
+On a parallel filesystem such as IBM Spectrum Scale or Lustre this is the slow
+path by design; the native policy engine reads metadata far faster. This
+version does not read policy\-engine output.
+.PP
+Scans are single\-threaded. A stat\-only pass runs at roughly 30,000 entries per
+second on a laptop.
+.PP
+The
+.B host
+column is recorded but only ever populated with the local host. Remote scanning
+is not implemented.
+.SH SEE ALSO
+.BR du (1),
+.BR find (1),
+.BR stat (1),
+.BR sqlite3 (1),
+.BR pdsh (1)
+.SH LICENSE
+Apache License 2.0.
