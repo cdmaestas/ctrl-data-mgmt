@@ -192,6 +192,8 @@ a tree hashed with nothing recording which half.
   Not implemented; recorded so the decisions that keep it cheap survive.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — setup, and the list of choices that
   are deliberate rather than accidental.
+- **[docs/releasing.md](docs/releasing.md)** — how a release happens, and the
+  one-time PyPI Trusted Publishing setup it depends on.
 
 ## Development
 
