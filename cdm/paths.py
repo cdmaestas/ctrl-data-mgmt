@@ -13,9 +13,53 @@ from __future__ import annotations
 
 import os
 import socket
+import stat
+import sys
 from pathlib import Path
 
 APP_NAME = "ctrl-data-mgmt"
+
+# Modes that must hold. Anything readable by group or other defeats the point.
+DIR_MODE = 0o700
+FILE_MODE = 0o600
+OTHERS_MASK = 0o077
+
+
+def enforce_mode(path: Path, mode: int) -> str | None:
+    """Set a mode and then CHECK it. Returns a warning, or None if it held.
+
+    chmod can fail -- an unsupported filesystem, a network mount, a container
+    overlay -- and this tool is aimed at people who point it at exactly those.
+    Ignoring that failure is how the index quietly ends up world-readable while
+    the README, the man page and CI all still claim 0600.
+
+    So the mode is verified rather than assumed, and a failure is reported
+    rather than swallowed.
+    """
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass  # deliberately continue: the point is to report the ACTUAL mode
+    try:
+        actual = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError as exc:
+        return f"cdm: cannot check permissions on {path}: {exc}"
+    if actual & OTHERS_MASK:
+        return (f"cdm: WARNING {path} is mode {oct(actual)}, not {oct(mode)} -- "
+                f"other users on this machine can read it. The filesystem may not "
+                f"support chmod; move the index with CDM_DATA_DIR if that matters.")
+    return None
+
+
+def warn(message: str | None) -> None:
+    """Print a permissions warning where it cannot be missed.
+
+    Printing from a low-level module is poor layering. The alternative --
+    returning a warning for callers to check -- is precisely the pattern that
+    produced this bug, so it loses to being loud.
+    """
+    if message:
+        print(message, file=sys.stderr)
 
 
 def env(suffix: str, default: str | None = None) -> str | None:
@@ -38,10 +82,7 @@ def index_path() -> Path:
 def ensure_data_dir() -> Path:
     d = data_dir()
     d.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(d, 0o700)
-    except OSError:
-        pass  # a directory we cannot chmod is still usable; the db mode is what matters
+    warn(enforce_mode(d, DIR_MODE))
     return d
 
 

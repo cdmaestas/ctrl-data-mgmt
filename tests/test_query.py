@@ -146,7 +146,9 @@ def test_verify_splits_false_partial_matches(conn, tmp_path):
 
     groups = query.dupe_groups(conn)
     assert len(groups) == 1 and groups[0]["count"] == 2   # partial hash matched
-    assert query.verify_group(groups[0]) == []            # full hash says no
+    confirmed, unreadable = query.verify_group(groups[0])
+    assert confirmed == []                                # full hash says no
+    assert unreadable == []                               # and nothing was skipped
 
 
 def test_verify_confirms_true_duplicates(conn, tmp_path):
@@ -156,8 +158,9 @@ def test_verify_confirms_true_duplicates(conn, tmp_path):
     (root / "b.bin").write_bytes(b"z" * 200000)
     scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
 
-    confirmed = query.verify_group(query.dupe_groups(conn)[0])
+    confirmed, unreadable = query.verify_group(query.dupe_groups(conn)[0])
     assert len(confirmed) == 1 and len(confirmed[0]) == 2
+    assert unreadable == []
 
 
 # --- staleness -------------------------------------------------------------

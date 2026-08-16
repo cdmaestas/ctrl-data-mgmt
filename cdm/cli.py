@@ -235,9 +235,11 @@ def cmd_dupes(args, conn) -> int:
         return 0
 
     total = 0
+    unreadable: list[str] = []
     for g in groups:
         if args.verify and g["hash_kind"] == hashing.PARTIAL:
-            confirmed = query.verify_group(g)
+            confirmed, skipped = query.verify_group(g)
+            unreadable.extend(skipped)
             if not confirmed:
                 continue
             for members in confirmed:
@@ -253,6 +255,12 @@ def cmd_dupes(args, conn) -> int:
             for row in g["members"]:
                 print(f"    {row['path']}")
     _err(f"reclaimable: {human_size(total)}")
+    if unreadable:
+        # Never silent: a verification that could not read a file has not
+        # verified anything about it.
+        _err(f"cdm: {len(unreadable)} file(s) could not be read during "
+             f"verification and are NOT counted, first: {unreadable[0]}")
+        return 1
     return 0
 
 
@@ -322,8 +330,24 @@ def cmd_doctor(args) -> int:
         _err("cdm: no index yet. Run `cdm scan <path>`.")
         return 1
 
-    mode = os.stat(index).st_mode & 0o777
-    print(f"mode      {oct(mode)}" + ("" if mode == 0o600 else "   <- expected 0600"))
+    rc = 0
+    # Permissions are checked across the sidecars too: -wal and -shm hold the
+    # same filename data as the index, and SQLite creates them itself.
+    for path in (index, index.with_name(index.name + "-wal"),
+                 index.with_name(index.name + "-shm"), paths.data_dir()):
+        if not path.exists():
+            continue
+        mode = os.stat(path).st_mode & 0o777
+        want = paths.DIR_MODE if path.is_dir() else paths.FILE_MODE
+        label = "dir " if path.is_dir() else "mode"
+        if mode & paths.OTHERS_MASK:
+            # Exits non-zero so this can gate a script, rather than being a
+            # note in output nobody reads.
+            print(f"{label}      {oct(mode)}  <- expected {oct(want)}, "
+                  f"OTHERS CAN READ {path.name}")
+            rc = 1
+        elif path == index:
+            print(f"mode      {oct(mode)}")
     print(f"size      {human_size(index.stat().st_size)}")
 
     # Opened here rather than through @with_index: connecting creates the file,
@@ -341,7 +365,8 @@ def cmd_doctor(args) -> int:
 
     print(f"entries   {files}  ({hashed} hashed, {stale} stale)")
     print(f"roots     {len(roots)}")
-    rc = 0
+    # rc is NOT reset here: a permissions failure found above must survive to
+    # the exit status, not be overwritten by a later clean check.
     for r in roots:
         gone = "" if Path(r["path"]).is_dir() else "   <- gone from disk"
         if gone:
