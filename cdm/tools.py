@@ -45,7 +45,10 @@ SHAPE_TOOLS = {
                       "range. Answers 'is the space in a few huge files or many "
                       "small ones'.",
     "age_histogram": "How many files, and how many bytes, by time since last "
-                     "modification. Answers 'how much of this is cold'.",
+                     "modification (by='mtime', default) or last access "
+                     "(by='atime'). Answers 'how much of this is cold'. Access "
+                     "times exist only where the filesystem records them; the "
+                     "rest are counted separately, never as old.",
     "extensions": "Top file extensions by bytes. Answers 'what kind of data is "
                   "taking the space'. Totals always add up to the whole.",
     "duplicates_summary": "How much space looks duplicated, how much is "
@@ -64,8 +67,10 @@ SHAPE_TOOLS = {
 }
 
 NAME_TOOLS = {
-    "find": "Search for files by name, size and modification time. Returns "
-            "paths. Sizes like 100M or 2.5G; times like 7d, 24h or 2026-08-01.",
+    "find": "Search for files by name, size, modification time and last access "
+            "time. Returns paths. Sizes like 100M or 2.5G; times like 7d, 24h or "
+            "2026-08-01. accessed_before/after only match files with a trusted "
+            "access time.",
     "du": "Disk usage by subdirectory under a path, answered from the index. "
           "Returns directory paths.",
     "dupes": "Groups of files that share a hash. Returns paths. Partial-hash "
@@ -168,7 +173,8 @@ def _iso(epoch) -> str | None:
 
 def _file_row(r) -> dict[str, Any]:
     return {"path": r["path"], "type": r["type"], "bytes": r["size"],
-            "size": shape.human(r["size"]), "modified": _iso(r["mtime"])}
+            "size": shape.human(r["size"]), "modified": _iso(r["mtime"]),
+            "accessed": _iso(r["atime"])}
 
 
 class Catalog:
@@ -229,11 +235,15 @@ class Catalog:
                            *(["`find` with larger_than lists the biggest files."]
                              if self.expose_names else [])])
 
-    def age_histogram(self, root: str | None = None) -> dict[str, Any]:
+    def age_histogram(self, root: str | None = None, by: str = "mtime") -> dict[str, Any]:
         with self._open() as conn:
             out = shape.age_histogram(conn, host=self.host,
-                                      root=self._root(conn, root))
-        return _next(out, ["Ages are by last modification, not last use.",
+                                      root=self._root(conn, root), by=by)
+        return _next(out, ["Call again with by='atime' for last access; by='mtime' "
+                           "is last modification." if by == "mtime" else
+                           "A recent access may be Spotlight, a backup or a virus "
+                           "scanner, not a person: old means unused, recent does "
+                           "not prove use.",
                            "`suggest` flags stale build output, old installers "
                            "and caches."])
 
@@ -287,12 +297,13 @@ class Catalog:
     def find(self, name: str | None = None, iname: str | None = None,
              kind: str | None = None, larger_than: str | None = None,
              smaller_than: str | None = None, modified_after: str | None = None,
-             modified_before: str | None = None, root: str | None = None,
+             modified_before: str | None = None, accessed_after: str | None = None,
+             accessed_before: str | None = None, root: str | None = None,
              order: str = "size", limit: int = 50) -> dict[str, Any]:
         if kind not in (None, "file", "dir", "link"):
             raise ValueError("kind must be file, dir or link")
-        if order not in ("size", "mtime", "name", "path"):
-            raise ValueError("order must be size, mtime, name or path")
+        if order not in ("size", "mtime", "atime", "name", "path"):
+            raise ValueError("order must be size, mtime, atime, name or path")
         limit = max(1, min(limit, MAX_ROWS))
         with self._open() as conn:
             rows = query.find(
@@ -304,6 +315,10 @@ class Catalog:
                                 if modified_after else None),
                 modified_before=(query.parse_when(modified_before)
                                  if modified_before else None),
+                accessed_after=(query.parse_when(accessed_after)
+                                if accessed_after else None),
+                accessed_before=(query.parse_when(accessed_before)
+                                 if accessed_before else None),
                 order=order, limit=limit + 1)
         return _next({"results": [_file_row(r) for r in rows[:limit]],
                       "truncated": len(rows) > limit},

@@ -154,7 +154,7 @@ def test_model_files_are_grouped_by_store_and_never_called_safe(tmp_path):
     stores = {os.path.basename(i["path"]): i for i in s["items"]}
     assert stores["models"]["files"] == 2 and stores["models"]["bytes"] == 600
     assert "weights" in stores
-    assert "not last used" in s["detail"]
+    assert "last read" in s["detail"]
 
 
 def test_duplicates_point_at_verification(tmp_path):

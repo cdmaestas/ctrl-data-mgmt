@@ -6,6 +6,7 @@ filter is an optional AND-ed clause over one column.
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -45,7 +46,8 @@ def parse_when(text: str, *, now: float | None = None) -> float:
 
 def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
          larger_than=None, smaller_than=None, modified_after=None,
-         modified_before=None, order="size", limit=100):
+         modified_before=None, accessed_after=None, accessed_before=None,
+         order="size", limit=100):
     # Every filter is one optional AND-ed clause over one column. Keeping them
     # in a table rather than a run of ifs is what makes the set easy to extend
     # -- and easy for a future NL layer to enumerate.
@@ -68,6 +70,10 @@ def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
         ("size < ?", smaller_than),
         ("mtime > ?", modified_after),
         ("mtime < ?", modified_before),
+        # A NULL atime -- untrusted filesystem, a directory, not yet recorded --
+        # matches neither, so "not accessed since" is never guessed.
+        ("atime > ?", accessed_after),
+        ("atime < ?", accessed_before),
     )
     clauses, params = [], []
     for sql_fragment, value in specs:
@@ -77,6 +83,7 @@ def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     order_sql = {"size": "size DESC", "mtime": "mtime DESC",
+                 "atime": "atime IS NULL, atime DESC",
                  "name": "name ASC", "path": "path ASC"}[order]
     sql = f"SELECT * FROM files{where} ORDER BY {order_sql} LIMIT ?"
     return conn.execute(sql, (*params, limit)).fetchall()
@@ -117,7 +124,8 @@ def dupe_groups(conn, *, host=None, min_size=1, limit=100):
     return out
 
 
-def verify_group(group) -> tuple[list[list[str]], list[str]]:
+def verify_group(group, reads: dict[str, float] | None = None
+                 ) -> tuple[list[list[str]], list[str]]:
     """Re-hash a partial-hash group in full and split it into true duplicates.
 
     A partial hash proposes; this confirms. Returns (confirmed groups,
@@ -139,8 +147,24 @@ def verify_group(group) -> tuple[list[list[str]], list[str]]:
         except OSError:
             unreadable.append(str(path))
             continue
+        if reads is not None:
+            # This read may have moved the atime; record_own_reads() stops it
+            # being mistaken for use on the next scan.
+            try:
+                reads[str(path)] = os.stat(path).st_atime
+            except OSError:
+                pass
         by_digest.setdefault(digest, []).append(str(path))
     return [paths for paths in by_digest.values() if len(paths) > 1], unreadable
+
+
+def record_own_reads(conn, host: str, reads: dict[str, float]) -> None:
+    """Remember the atimes cdm's own full reads left behind. See scan.atime_for."""
+    conn.executemany(
+        "UPDATE files SET self_atime = ? WHERE host = ? AND path = ? "
+        "AND atime IS NOT NULL",
+        [(t, host, p) for p, t in reads.items()])
+    conn.commit()
 
 
 def disk_usage(conn, under: str, *, depth: int = 1, host=None, limit: int = 40):

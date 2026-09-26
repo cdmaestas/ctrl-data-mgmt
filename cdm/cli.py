@@ -20,7 +20,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import db, guide, hashing, paths, probe, query, roots, suggest
+from . import atime, db, guide, hashing, paths, probe, query, roots, suggest
 from .exclude import Excluder
 from .scan import scan_root
 
@@ -281,6 +281,9 @@ def cmd_find(args, conn) -> int:
             modified_after=query.parse_when(args.modified_after) if args.modified_after else None,
             modified_before=(query.parse_when(args.modified_before)
                              if args.modified_before else None),
+            accessed_after=query.parse_when(args.accessed_after) if args.accessed_after else None,
+            accessed_before=(query.parse_when(args.accessed_before)
+                             if args.accessed_before else None),
             order=args.order,
             limit=args.limit,
         )
@@ -307,9 +310,10 @@ def cmd_dupes(args, conn) -> int:
 
     total = 0
     unreadable: list[str] = []
+    reads: dict[str, float] = {}
     for g in groups:
         if args.verify and g["hash_kind"] == hashing.PARTIAL:
-            confirmed, skipped = query.verify_group(g)
+            confirmed, skipped = query.verify_group(g, reads)
             unreadable.extend(skipped)
             if not confirmed:
                 continue
@@ -326,6 +330,8 @@ def cmd_dupes(args, conn) -> int:
             for row in g["members"]:
                 print(f"    {row['path']}")
     _err(f"reclaimable: {human_size(total)}")
+    if reads:
+        query.record_own_reads(conn, paths.this_host(), reads)
     if unreadable:
         # Never silent: a verification that could not read a file has not
         # verified anything about it.
@@ -388,7 +394,9 @@ def cmd_suggest(args, conn) -> int:
                             initial_indent=pad, subsequent_indent=pad))
         items = s.get("items", [])
         for item in items:
-            when = f", newest {item['newest'][:10]}" if item.get("newest") else ""
+            when = f", modified {item['newest'][:10]}" if item.get("newest") else ""
+            if item.get("last_read"):
+                when += f", read {item['last_read'][:10]}"
             print(f"                     {item['size']:>7}  {item['path']}"
                   f"  ({item['files']:,} files{when})" if item["files"] > 1 else
                   f"                     {item['size']:>7}  {item['path']}")
@@ -481,6 +489,11 @@ def cmd_stat(args, conn) -> int:
     print(f"type      {row['type']}")
     print(f"size      {human_size(row['size'])}  ({row['size']} bytes)")
     print(f"modified  {human_time(row['mtime'])}")
+    if row["atime"] is not None:
+        print(f"accessed  {human_time(row['atime'])}")
+    elif row["type"] == "file":
+        print("accessed  not recorded (the filesystem does not update access times, "
+              "or it has not been read since cdm last hashed it)")
     print(f"created   {human_time(row['ctime'])}")
     print(f"inode     {row['inode']}")
     if row["hash"]:
@@ -531,16 +544,26 @@ def cmd_doctor(args) -> int:
         ).fetchone()[0]
         roots = conn.execute(
             "SELECT host, path, last_scan FROM roots ORDER BY path").fetchall()
+        regular, with_atime = conn.execute(
+            "SELECT COUNT(*), COUNT(atime) FROM files WHERE type = 'file'").fetchone()
 
     print(f"entries   {files}  ({hashed} hashed, {stale} stale)")
+    if regular:
+        print(f"atime     {with_atime} of {regular} files have a trusted last-access "
+              f"time ({with_atime / regular:.0%})")
     print(f"roots     {len(roots)}")
     # rc is NOT reset here: a permissions failure found above must survive to
     # the exit status, not be overwritten by a later clean check.
+    trust = atime.Trust(measured=atime.probe(paths.data_dir())) if roots else None
     for r in roots:
         gone = "" if Path(r["path"]).is_dir() else "   <- gone from disk"
         if gone:
             rc = 1
         print(f"  {r['path']}  last scan {r['last_scan'] or 'never'}{gone}")
+        if not gone:
+            # Why a root has access times or not, so 0% is explained, not silent.
+            ok, why = trust.check(r["path"], os.stat(r["path"]).st_dev)
+            print(f"    access times {'trusted' if ok else 'not recorded'}: {why}")
     if stale:
         _err(f"cdm: {stale} hash(es) are stale; `cdm rescan --checksum` refreshes them")
     return rc
@@ -651,8 +674,12 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--smaller-than", metavar="SIZE")
     f.add_argument("--modified-after", metavar="WHEN", help="7d, 24h, or 2026-08-01")
     f.add_argument("--modified-before", metavar="WHEN")
+    f.add_argument("--accessed-after", metavar="WHEN",
+                   help="last read after WHEN; files with no trusted access time never match")
+    f.add_argument("--accessed-before", metavar="WHEN")
     f.add_argument("--root", metavar="PATH", help="restrict to one root (and roots nested in it)")
-    f.add_argument("--order", choices=["size", "mtime", "name", "path"], default="size")
+    f.add_argument("--order", choices=["size", "mtime", "atime", "name", "path"],
+                   default="size")
     f.add_argument("--limit", type=int, default=100)
     f.add_argument("--all-hosts", action="store_true")
     f.add_argument("-q", "--quiet", action="store_true", help="paths only, for piping")

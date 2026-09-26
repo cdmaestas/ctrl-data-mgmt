@@ -12,6 +12,10 @@ commit. It becomes `0.1.0` when that is tagged.
 
 ### Upgrading
 
+- **Index schema 4** adds last access time. The first read-write command adds
+  the columns; nothing is lost. Access times fill in on the next scan, and only
+  where they are trustworthy (see *Added*). Restart a running `cdm mcp` after
+  upgrading.
 - **Index schema 3.** The first read-write command (e.g. `cdm doctor`) upgrades
   an existing index. The upgrade clears partial hashes for files between 64 KiB
   and 128 KiB, which earlier builds computed wrongly (see *Fixed*); run
@@ -59,6 +63,15 @@ commit. It becomes `0.1.0` when that is tagged.
   `docs/adr/0004`. `cdm guide --schedule` prints a nightly rescan job (launchd
   or cron) to install yourself.
 - README: a Getting started section.
+- Last access time for files, recorded only where it means "last read": cdm
+  measures its own data directory's filesystem and reads mount options
+  elsewhere, and records an untrustworthy one (noatime, read-only, macOS APFS's
+  first-read-only updates) as unknown. cdm's own reads never count
+  (`O_NOATIME` on Linux, otherwise its reads are remembered and discounted).
+  `stat` shows it, `find --accessed-before/--accessed-after` and
+  `--order atime` use it, MCP `age_histogram` takes `by='atime'`, `suggest`
+  judges age by the later of modified and last read, and `doctor` reports
+  coverage. See `docs/adr/0005`.
 - Man page `cdm(1)`, contributing guide, and version-controlled git hooks.
 - Release workflow: Trusted Publishing, TestPyPI and a smoke test before PyPI.
 

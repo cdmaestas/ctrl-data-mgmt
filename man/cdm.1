@@ -84,7 +84,8 @@ Show the getting\-started checklist and what to do next. See
 .TP
 .BI "stat " path
 Print everything the index records about one path, including whether its hash
-has gone stale.
+has gone stale and, where it is trusted, when the file was last read. See
+.BR "ACCESS TIMES" .
 .TP
 .B mcp
 Serve the index to an AI client over the Model Context Protocol, on standard
@@ -92,8 +93,10 @@ input and output. Read\-only. See
 .BR "MCP SERVER" .
 .TP
 .B doctor
-Report index location, permissions, entry and hash counts, stale hashes, and
-roots that have disappeared from disk. Exits non-zero if the index, its
+Report index location, permissions, entry and hash counts, stale hashes, how
+many files have a trusted access time and, for each root, why or why not (see
+.BR "ACCESS TIMES" ),
+and roots that have disappeared from disk. Exits non-zero if the index, its
 write-ahead log, its shared-memory file or the data directory are readable by
 other users, so it can gate a script rather than merely mentioning the problem.
 .SH SCAN OPTIONS
@@ -168,10 +171,15 @@ Filter on size. See
 .BI \-\-modified\-after " when" ", " \-\-modified\-before " when"
 Filter on mtime.
 .TP
+.BI \-\-accessed\-after " when" ", " \-\-accessed\-before " when"
+Filter on last access time. Files without a trusted access time never match
+either. See
+.BR "ACCESS TIMES" .
+.TP
 .BI \-\-root " path"
 Restrict results to one root, including any roots nested inside it.
 .TP
-.BI \-\-order " {size|mtime|name|path}"
+.BI \-\-order " {size|mtime|atime|name|path}"
 Sort order. Default
 .BR size ,
 descending.
@@ -287,6 +295,34 @@ Those files are recorded but never opened for hashing: closing any descriptor
 to a file drops every POSIX lock the process holds on it, and losing SQLite's
 locks lets another process delete the write\-ahead log while the scan is still
 using it.
+.SH ACCESS TIMES
+For files,
+.B cdm
+records the last access time, but only where a read of a file last read more
+than a day ago moves it: Linux
+.B relatime
+semantics or better. A filesystem mounted
+.B noatime
+or read\-only fails that, and so does macOS APFS, where a read was measured to
+move the access time only on the first read after a change. Elsewhere the
+access time is recorded as unknown, never as a date.
+.PP
+Trust is decided per device. On the device holding the index directory it is
+measured with a scratch file; on others it is read from the mount options, and
+on macOS an unmeasured device is not trusted.
+.PP
+The scanner's own reads are not counted as use. On Linux, hashing opens files
+with
+.BR O_NOATIME .
+Otherwise the access time left by
+.BR cdm 's
+read is remembered, and the earlier access time stands until something else
+reads the file.
+.B "dupes \-\-verify"
+does the same. Directories are never given an access time, since scanning
+lists them.
+.B "cdm doctor"
+reports how many files have a trusted access time.
 .SH NESTED ROOTS
 Roots may overlap, for example
 .I ~
@@ -326,9 +362,11 @@ because it decides whether every other answer is right;
 .B safe
 for data that regenerates on its own, such as a package cache; and
 .B review
-for everything else. Staleness is judged by modification time, which is not
-last access: a file read every day but never rewritten looks old. Nothing judged
-by age alone is marked
+for everything else. Age is the later of the last modification and, where it
+is trusted, the last read (see
+.BR "ACCESS TIMES" ).
+A recent read may be an indexer or a backup rather than a person, so nothing
+judged by age alone is marked
 .BR safe .
 Dependencies and build output are only suggested inside a git working tree.
 A cache inside another listed cache is not counted twice, but savings can
@@ -540,6 +578,14 @@ If a mode cannot be set \(em some filesystems do not support
 \(em the tool prints a warning naming the file rather than continuing silently.
 The scan still runs; whether that is acceptable is a decision only you can make,
 which is why it is reported instead of assumed either way.
+.TP
+.I $XDG_DATA_HOME/ctrl\-data\-mgmt/.cdm\-atime\-probe\-*
+A few\-byte scratch file, created and deleted during each scan and by
+.BR "cdm doctor" ,
+to measure whether that filesystem keeps last\-read times. It is the only file
+.B cdm
+writes outside the index, and only ever in its own data directory. See
+.BR "ACCESS TIMES" .
 .SH ENVIRONMENT
 .TP
 .B CDM_DATA_DIR
@@ -652,6 +698,13 @@ running
 .BR cdm .
 Without it those paths are reported as unreadable and skipped, which is
 correct but means the index is incomplete for them.
+.PP
+Also on macOS, APFS updates a file's access time only on the first read after
+it changes, so access times there are recorded as unknown. See
+.BR "ACCESS TIMES" .
+On IBM Storage Scale, access\-time updates are set per filesystem with
+.B "mmchfs \-S"
+and may not appear in the mount options.
 .SH SEE ALSO
 .BR du (1),
 .BR find (1),
