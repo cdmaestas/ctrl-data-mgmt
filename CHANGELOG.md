@@ -53,6 +53,12 @@ commit. It becomes `0.1.0` when that is tagged.
 - MCP prompts (`disk-usage`, `cleanup`, `duplicates`, `recent-changes`,
   `index-health`) that clients list as ready-made questions, and a `next_steps`
   field on every tool result pointing at the next useful tool.
+- `cdm guide`, the MCP `guide` tool and a `getting-started` prompt: a fixed
+  checklist from first scan to a well-kept index, with the next step
+  explained. Each step's status is read from the index, never assumed. See
+  `docs/adr/0004`. `cdm guide --schedule` prints a nightly rescan job (launchd
+  or cron) to install yourself.
+- README: a Getting started section.
 - Man page `cdm(1)`, contributing guide, and version-controlled git hooks.
 - Release workflow: Trusted Publishing, TestPyPI and a smoke test before PyPI.
 

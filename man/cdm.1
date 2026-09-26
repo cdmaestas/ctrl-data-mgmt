@@ -78,6 +78,10 @@ List what is worth doing, ranked, with the command for each. Changes nothing.
 See
 .BR SUGGESTIONS .
 .TP
+.BI "guide " [ options ]
+Show the getting\-started checklist and what to do next. See
+.BR GUIDE .
+.TP
 .BI "stat " path
 Print everything the index records about one path, including whether its hash
 has gone stale.
@@ -356,6 +360,44 @@ shows every one.
 The same data the MCP
 .B suggest
 tool returns.
+.SH GUIDE
+.B "cdm guide"
+prints a fixed checklist from first scan to a well\-kept index, with the next
+step explained: index a folder; hash it; see what's worth doing; clean up, then
+rescan; keep it current; and, optionally, connect an AI client. Each step shows
+the command to run and what you will see afterwards.
+.PP
+A step is marked done only because the index shows it: a root exists, at least
+90% of its files are hashed, every root was scanned in the last 7 days. Steps
+the index cannot observe, such as whether you acted on a suggestion, are shown
+as advice and never as done. Progress counts the three steps that can always
+be checked.
+.TP
+.B \-\-all
+Explain every step, not just the next one.
+.TP
+.B \-\-schedule
+Print a job that runs
+.B "cdm rescan \-\-checksum"
+nightly: a launchd agent on macOS, a crontab line elsewhere. The job goes to
+standard output, so it can be redirected into place; how to install and remove
+it goes to standard error.
+.B cdm
+never installs it.
+.RS
+.PP
+.EX
+cdm guide \-\-schedule > \e
+  ~/Library/LaunchAgents/io.github.ctrl\-data\-mgmt.rescan.plist
+launchctl bootstrap gui/$(id \-u) \e
+  ~/Library/LaunchAgents/io.github.ctrl\-data\-mgmt.rescan.plist
+.EE
+.RE
+.TP
+.B \-\-json
+The same checklist the MCP
+.B guide
+tool returns.
 .SH MCP SERVER
 .B "cdm mcp"
 lets an MCP client such as Claude Code or Claude Desktop answer plain\-language
@@ -379,9 +421,10 @@ Out of the box the server offers only
 .BR size_histogram ,
 .BR age_histogram ,
 .BR extensions ,
-.B duplicates_summary
+.BR duplicates_summary ,
+.B suggest
 and
-.BR suggest :
+.BR guide :
 totals, histograms, file types and ranked suggestions, with no file or
 directory name below a root. With a cloud\-hosted model every answer goes to
 its provider, and filenames are often sensitive on their own. Extensions are
@@ -412,6 +455,7 @@ tool reports how many days ago each root was scanned.
 .PP
 The server also offers prompts, ready\-made questions a client can list as a
 menu:
+.BR getting\-started ,
 .BR disk\-usage ,
 .BR cleanup ,
 .BR duplicates ,
