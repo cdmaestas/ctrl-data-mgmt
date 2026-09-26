@@ -104,6 +104,7 @@ Ignore any checkpoint from an interrupted scan and start from the beginning.
 .TP
 .B \-\-checksum
 Record a partial hash: the first and last 64 KiB plus the exact byte count.
+A file of 128 KiB or less is read whole.
 Intended for duplicate detection.
 .TP
 .B \-\-full\-checksum

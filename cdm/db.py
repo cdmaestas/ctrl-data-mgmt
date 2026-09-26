@@ -17,9 +17,9 @@ import os
 import sqlite3
 from pathlib import Path
 
-from . import paths
+from . import hashing, paths
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots (
@@ -159,6 +159,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
             f"this build understands {SCHEMA_VERSION}). Upgrade cdm."
         )
     conn.executescript(SCHEMA)
+    if 0 < version < 3:
+        # Before schema 3, a partial hash of a file between one and two windows
+        # read only the head, so files differing past byte 64 KiB collided.
+        # Every other size hashes identically now, so only these rows are
+        # dropped; the next --checksum scan recomputes them instead of reusing
+        # them on unchanged size and mtime.
+        conn.execute(
+            "UPDATE files SET hash = NULL, hash_kind = NULL, hash_size = NULL, "
+            "hash_mtime = NULL WHERE hash_kind = ? AND hash_size > ? AND hash_size <= ?",
+            (hashing.PARTIAL, hashing.WINDOW, 2 * hashing.WINDOW))
     if version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
