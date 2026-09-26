@@ -45,7 +45,9 @@ that published wheel in a clean machine and actually runs `cdm scan`, `find`,
 **Then the real thing:**
 
 ```bash
-# 1. Bump the version in pyproject.toml, commit it
+# 1. Bump the version in pyproject.toml, and in CHANGELOG.md rename
+#    [Unreleased] to [<version>] - <date> and start a new empty [Unreleased].
+#    Commit both.
 # 2. Tag it -- the tag MUST be v<version> or the workflow refuses
 git tag v0.1.0
 git push origin v0.1.0
