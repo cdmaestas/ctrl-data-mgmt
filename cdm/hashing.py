@@ -1,10 +1,11 @@
 """Two hashes, for two different questions.
 
 PARTIAL (default) answers "are these probably the same file". It reads the
-first and last 64 KB and mixes the size in. On a multi-terabyte tree that is
-the difference between minutes and a weekend, and for dedupe it is very nearly
-as good as a full hash: two distinct files that share both ends *and* their
-exact byte count are rare enough that `cdm dupes --verify` exists to settle it.
+first and last 64 KB (all of it, up to 128 KB) and mixes the size in. On a
+multi-terabyte tree that is the difference between minutes and a weekend, and
+for dedupe it is very nearly as good as a full hash: two distinct files that
+share both ends *and* their exact byte count are rare enough that
+`cdm dupes --verify` exists to settle it.
 
 FULL answers "is this byte-for-byte what I recorded". No shortcut is available
 and none is offered.
@@ -26,16 +27,22 @@ FULL = "full"
 
 
 def partial_hash(path: Path, size: int) -> str:
-    """Hash of (size, first 64 KB, last 64 KB). Cheap and stable."""
+    """Hash of (size, first 64 KB, last 64 KB). Cheap and stable.
+
+    A file of at most two windows is hashed whole: head and tail would overlap
+    or touch, and reading just the head would leave bytes WINDOW..size unhashed.
+    For those files the digest is the full content under the partial tag, which
+    is also exactly what v1 produced for size <= WINDOW; see db._migrate for the
+    rows v1 got wrong.
+    """
     h = hashlib.blake2b(digest_size=16)
     h.update(b"cdm-partial-v1\0")
     h.update(str(size).encode("ascii"))
     with open(path, "rb") as f:
-        head = f.read(WINDOW)
-        h.update(head)
-        # Only seek for the tail when the file is big enough for the two
-        # windows to be disjoint; otherwise head already covers the whole file.
-        if size > 2 * WINDOW:
+        if size <= 2 * WINDOW:
+            h.update(f.read(2 * WINDOW))
+        else:
+            h.update(f.read(WINDOW))
             f.seek(-WINDOW, 2)
             h.update(f.read(WINDOW))
     return h.hexdigest()
@@ -58,7 +65,7 @@ def bytes_read(size: int, kind: str) -> int:
     """How many bytes compute() reads for a file of `size`, for throughput."""
     if kind == FULL:
         return size
-    return min(size, WINDOW) + (WINDOW if size > 2 * WINDOW else 0)
+    return size if size <= 2 * WINDOW else 2 * WINDOW
 
 
 def compute(path: Path, size: int, kind: str) -> str:
