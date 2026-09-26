@@ -300,3 +300,71 @@ def test_resume_descends_into_a_nested_root(conn, home):
     assert stats.resumed_from == 2
     assert stats.files == 1        # proj/b.py: proj was not checkpointed
     assert "b.py" in paths_in(conn)
+
+
+# --- what a rescan keeps and what it drops -----------------------------------
+
+def test_a_deleted_directory_takes_its_whole_subtree_with_it(conn, tmp_path):
+    """`uv cache clean` removed ~/.cache/uv; its 27,326 rows survived a rescan."""
+    root = tmp_path / "home"
+    for rel in ("cache/uv/a/b/c/deep.bin", "cache/uv/a/x.bin", "keep/k.txt"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("x")
+    scan_root(conn, HOST, root)
+
+    import shutil
+    shutil.rmtree(root / "cache" / "uv")
+    stats = scan_root(conn, HOST, root)
+
+    left = {r["path"] for r in conn.execute("SELECT path FROM files")}
+    assert not [p for p in left if "/cache/uv" in p], "rows under a deleted dir survived"
+    assert str((root / "keep" / "k.txt").resolve()) in left
+    assert stats.pruned == 6   # uv, a, b, c, deep.bin, x.bin
+
+
+def test_a_plain_rescan_keeps_hashes_that_still_match(conn, tree):
+    """A stat-only rescan must not wipe what --checksum recorded."""
+    scan_root(conn, HOST, tree, hash_kind=hashing.PARTIAL)
+    (tree / "a.txt").write_text("changed, so its hash no longer applies")
+
+    stats = scan_root(conn, HOST, tree)
+
+    hashes = {Path(r["path"]).name: r["hash"] for r in conn.execute(
+        "SELECT path, hash FROM files WHERE type = 'file'")}
+    assert hashes["b.txt"] and hashes["big.bin"]
+    assert hashes["a.txt"] is None
+    assert stats.reused_hashes == 2 and stats.hashed == 0
+
+
+def test_rows_orphaned_by_an_older_build_are_swept(conn, tmp_path):
+    """An index where the directory row was pruned but its subtree was not."""
+    root = tmp_path / "home"
+    (root / "cache" / "uv" / "a").mkdir(parents=True)
+    (root / "cache" / "uv" / "a" / "f.bin").write_text("x")
+    (root / "keep").mkdir()
+    (root / "keep" / "k.txt").write_text("x")
+    scan_root(conn, HOST, root)
+    import shutil
+    shutil.rmtree(root / "cache" / "uv")
+    uv = str((root / "cache" / "uv").resolve())
+    conn.execute("DELETE FROM files WHERE path = ?", (uv,))   # what the old build left
+    conn.commit()
+
+    scan_root(conn, HOST, root)
+    left = {r["path"] for r in conn.execute("SELECT path FROM files")}
+    assert not [p for p in left if p.startswith(uv)]
+    assert str((root / "keep" / "k.txt").resolve()) in left
+
+
+def test_the_orphan_sweep_leaves_unreadable_directories_alone(conn, tmp_path):
+    root = tmp_path / "home"
+    (root / "locked" / "inner").mkdir(parents=True)
+    (root / "locked" / "inner" / "f.txt").write_text("x")
+    scan_root(conn, HOST, root)
+    before = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    os.chmod(root / "locked", 0)
+    try:
+        scan_root(conn, HOST, root)
+    finally:
+        os.chmod(root / "locked", 0o755)
+    assert conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == before

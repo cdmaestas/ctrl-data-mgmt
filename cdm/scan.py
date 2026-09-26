@@ -155,6 +155,15 @@ def _index_files(conn) -> frozenset[str]:
     return frozenset(names)
 
 
+def _topmost(paths) -> list[str]:
+    """Drop every path that lies below another path in the set."""
+    kept: list[str] = []
+    for p in sorted(paths, key=len):
+        if not any(p.startswith(roots_mod.bounds(k)[0]) for k in kept):
+            kept.append(p)
+    return kept
+
+
 def _resumed_children(conn, host, owners, stamp, completed):
     """Map each completed directory to its subdirectories, from the index.
 
@@ -251,18 +260,23 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
 
     def hash_for(path: Path, st, kind: str):
         """Returns (digest, kind, size, mtime) or Nones."""
-        if kind != "file" or hash_kind is None:
+        if kind != "file":
             return None, None, None, None
         size = st.st_size
         prior = known.get(str(path))
+        # A stat-only scan keeps a hash that still matches, whatever its kind:
+        # it is still true, and dropping it silently emptied `cdm dupes` after
+        # a plain `cdm rescan` of a tree scanned with --checksum.
         if (prior is not None and prior["hash"] is not None
-                and prior["hash_kind"] == hash_kind
+                and (hash_kind is None or prior["hash_kind"] == hash_kind)
                 and prior["hash_size"] == size
                 and prior["hash_mtime"] == st.st_mtime):
             with lock:
                 stats.reused_hashes += 1
             return (prior["hash"], prior["hash_kind"], prior["hash_size"],
                     prior["hash_mtime"])
+        if hash_kind is None:
+            return None, None, None, None
         if max_hash_bytes is not None and size > max_hash_bytes:
             return None, None, None, None
         # Indexed, but never opened: see "The index's own files" above.
@@ -441,12 +455,40 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
     # Rows owned by a nested root are pruned too: this scan read those
     # directories just as thoroughly as the nested root's own scan would.
     marks = ",".join("?" * len(owners))
-    cur = conn.execute(
-        f"DELETE FROM files WHERE host = ? AND root IN ({marks}) AND seen_at < ? "
-        f"AND parent IN (SELECT path FROM scan_dirs "
-        f"               WHERE host = ? AND root = ? AND scan_id = ?)",
-        (host, *owners, stamp, host, root_key, scan_id))
-    stats.pruned = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    gone = (f"FROM files WHERE host = ? AND root IN ({marks}) AND seen_at < ? "
+            f"AND parent IN (SELECT path FROM scan_dirs "
+            f"               WHERE host = ? AND root = ? AND scan_id = ?)")
+    gone_params = (host, *owners, stamp, host, root_key, scan_id)
+    cur = conn.execute(f"DELETE {gone}", gone_params)
+    pruned = max(cur.rowcount or 0, 0)
+
+    # A vanished directory takes its whole subtree with it. Its own row goes
+    # above, but the rows beneath it have parents this scan never read, so
+    # without this they stay forever. Observed: after `uv cache clean`, all
+    # 27,326 rows under ~/.cache/uv survived a rescan.
+    #
+    # Swept as orphans -- stale rows whose parent directory has no row -- rather
+    # than from the directories deleted just now, so rows orphaned by an older
+    # build are cleaned up too. Absence is still only inferred from a directory
+    # that was read: a parent's row is removed only when its own parent was
+    # listed without it. An unreadable directory keeps its row, so nothing
+    # under it is touched; a registered root has no row of its own and is
+    # never treated as missing.
+    orphaned = [] if stats.root_unreadable else [r[0] for r in conn.execute(
+        f"SELECT DISTINCT f.parent FROM files f "
+        f"WHERE f.host = ? AND f.root IN ({marks}) AND f.seen_at < ? "
+        f"AND NOT EXISTS (SELECT 1 FROM files p WHERE p.host = f.host "
+        f"                AND p.path = f.parent) "
+        f"AND f.parent NOT IN (SELECT path FROM roots WHERE host = ?)",
+        (host, *owners, stamp, host))]
+    for directory in _topmost(orphaned):
+        if directory == root_key or not directory.startswith(roots_mod.bounds(root_key)[0]):
+            continue
+        lo, hi = roots_mod.bounds(directory)
+        cur = conn.execute("DELETE FROM files WHERE host = ? AND path >= ? AND path < ?",
+                           (host, lo, hi))
+        pruned += max(cur.rowcount or 0, 0)
+    stats.pruned = pruned
 
     conn.execute(
         "UPDATE scans SET finished_at = ? WHERE host = ? AND root = ? AND scan_id = ?",
