@@ -59,6 +59,11 @@ Change these only deliberately, and update the man page when you do:
   underlying failure mode still exists.
 - **A mode that cannot be set is reported, not ignored and not fatal.** See
   [docs/adr/0001](docs/adr/0001-warn-rather-than-refuse-on-unenforceable-permissions.md).
+- **Absence is only inferred from a directory that was successfully read.**
+  Pruning is scoped to the directories recorded in `scan_dirs`, and an
+  unreadable directory is never checkpointed. The unscoped version deleted every
+  row under a temporarily unmounted root and called them "no longer on disk";
+  `tests/test_unreadable.py` guards it.
 - **stdout is data, stderr is everything else**, so pipelines stay clean.
 
 ## Documentation

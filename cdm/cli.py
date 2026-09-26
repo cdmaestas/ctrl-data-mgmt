@@ -108,6 +108,14 @@ def _clear_progress() -> None:
 
 def _report_scan(root: Path, stats, ex: Excluder) -> None:
     _clear_progress()
+    if stats.root_unreadable:
+        # Not "0 files": the scan failed. Saying it plainly, and naming the
+        # usual causes, because the symptom looks identical to an empty tree.
+        _err(f"cdm: FAILED {root}: could not read the directory itself, so "
+             f"nothing was indexed and nothing was removed.")
+        _err("     Check permissions, whether the filesystem is mounted, and on "
+             "macOS whether the path needs Full Disk Access.")
+        return
     _err(f"{root}: {stats.files} files, {stats.dirs} dirs, {stats.links} links "
          f"in {stats.elapsed:.1f}s")
     if stats.threads > 1:
@@ -144,6 +152,8 @@ def cmd_scan(args, conn) -> int:
                           threads=_threads_for(args, root),
                           resume=not args.restart)
         _report_scan(root.resolve(), stats, ex)
+        if stats.root_unreadable:
+            rc = 1
     return rc
 
 
@@ -176,6 +186,8 @@ def cmd_rescan(args, conn) -> int:
                           threads=_threads_for(args, root),
                           resume=not args.restart)
         _report_scan(root, stats, ex)
+        if stats.root_unreadable:
+            rc = 1
     return rc
 
 
@@ -204,6 +216,7 @@ def cmd_find(args, conn) -> int:
             host=None if args.all_hosts else paths.this_host(),
             root=args.root,
             name=args.name,
+            iname=args.iname,
             kind=args.type,
             larger_than=query.parse_size(args.larger_than) if args.larger_than else None,
             smaller_than=query.parse_size(args.smaller_than) if args.smaller_than else None,
@@ -431,6 +444,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     f = sub.add_parser("find", help="query the index")
     f.add_argument("--name", metavar="GLOB", help="match the filename, e.g. '*.csv'")
+    f.add_argument("--iname", metavar="GLOB",
+                   help="like --name but case-insensitive, which is what you "
+                        "usually want on macOS and Windows filesystems")
     f.add_argument("--type", choices=["file", "dir", "link"])
     f.add_argument("--larger-than", metavar="SIZE")
     f.add_argument("--smaller-than", metavar="SIZE")

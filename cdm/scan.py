@@ -74,6 +74,7 @@ class ScanStats:
     elapsed: float = 0.0
     threads: int = 1
     resumed_from: int = 0
+    root_unreadable: bool = False
 
     @property
     def total(self) -> int:
@@ -219,7 +220,14 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
         return digest, hash_kind, size, st.st_mtime
 
     def walk_one(directory: Path):
-        """Enumerate one directory. Returns (rows, subdirectories)."""
+        """Enumerate one directory. Returns (rows, subdirectories, readable).
+
+        `readable` is False when the directory could not be opened at all. That
+        distinction is load-bearing twice over: an unreadable directory must not
+        be checkpointed (a resumed scan would skip it forever), and nothing
+        under it may be pruned (we did not see its contents because we could not
+        look, not because they are gone).
+        """
         rows, subdirs = [], []
         local = {"files": 0, "dirs": 0, "links": 0}
         try:
@@ -227,7 +235,7 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
         except OSError:
             with lock:
                 stats.unreadable.append(str(directory))
-            return rows, subdirs
+            return rows, subdirs, False
 
         for entry in entries:
             path = Path(entry.path)
@@ -266,7 +274,7 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
             stats.files += local["files"]
             stats.dirs += local["dirs"]
             stats.links += local["links"]
-        return rows, subdirs
+        return rows, subdirs, True
 
     def walker() -> None:
         while True:
@@ -279,8 +287,12 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
                     for child in resumed_children[directory]:
                         submit(child)
                 else:
-                    rows, subdirs = walk_one(directory)
-                    out.put((str(directory), rows))
+                    rows, subdirs, readable = walk_one(directory)
+                    # Only a directory we actually read gets handed to the
+                    # writer, because reaching the writer is what records it as
+                    # done and licenses pruning inside it.
+                    if readable:
+                        out.put((str(directory), rows))
                     for child in subdirs:
                         submit(child)
             except BaseException as exc:  # noqa: BLE001 - must not deadlock
@@ -341,10 +353,30 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
     if failed:
         raise failed[0]
 
-    # Anything under this root that this pass did not touch is gone from disk.
+    # The root itself is only in scan_dirs if it could be opened. If it could
+    # not, this scan saw nothing and must not be allowed to draw conclusions.
+    stats.root_unreadable = conn.execute(
+        "SELECT 1 FROM scan_dirs WHERE host = ? AND root = ? AND scan_id = ? "
+        "AND path = ?", (host, root_key, scan_id, root_key)).fetchone() is None
+
+    # Prune ONLY inside directories this scan actually enumerated.
+    #
+    # The obvious version -- delete everything under the root whose seen_at is
+    # old -- silently destroys the index when a tree is temporarily unreadable.
+    # An unmounted NFS or GPFS share, a revoked Full Disk Access on macOS, a
+    # permissions change: the walk records nothing, every existing row looks
+    # stale, and a rescan reports thousands of files as "no longer on disk"
+    # while they sit there untouched. Measured on a 6-row tree: all 6 deleted,
+    # exit status 0.
+    #
+    # scan_dirs holds exactly the directories that were successfully read, so
+    # restricting the delete to their children means absence is only ever
+    # inferred from a directory we could actually see into.
     cur = conn.execute(
-        "DELETE FROM files WHERE host = ? AND root = ? AND seen_at < ?",
-        (host, root_key, stamp))
+        "DELETE FROM files WHERE host = ? AND root = ? AND seen_at < ? "
+        "AND parent IN (SELECT path FROM scan_dirs "
+        "               WHERE host = ? AND root = ? AND scan_id = ?)",
+        (host, root_key, stamp, host, root_key, scan_id))
     stats.pruned = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     conn.execute(
@@ -354,10 +386,15 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
     # one row per directory per scan, forever.
     conn.execute("DELETE FROM scan_dirs WHERE host = ? AND root = ? AND scan_id = ?",
                  (host, root_key, scan_id))
-    conn.execute(
-        "INSERT INTO roots (host, path, added_at, last_scan) VALUES (?,?,?,?) "
-        "ON CONFLICT(host, path) DO UPDATE SET last_scan=excluded.last_scan",
-        (host, root_key, stamp, stamp))
+    if not stats.root_unreadable:
+        conn.execute(
+            "INSERT INTO roots (host, path, added_at, last_scan) VALUES (?,?,?,?) "
+            "ON CONFLICT(host, path) DO UPDATE SET last_scan=excluded.last_scan",
+            (host, root_key, stamp, stamp))
+    # A root that could not be opened gets no last_scan stamp. Recording one
+    # would make "I could not look" indistinguishable from "I looked and it was
+    # empty", which is the difference between an honest index and a misleading
+    # one. An already-known root keeps its previous timestamp.
     conn.commit()
 
     stats.elapsed = time.time() - started
