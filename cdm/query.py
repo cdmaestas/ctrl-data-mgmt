@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import hashing
+from . import hashing, roots
 
 _SIZE_UNITS = {"": 1, "b": 1, "k": 1024, "kb": 1024, "m": 1024 ** 2, "mb": 1024 ** 2,
                "g": 1024 ** 3, "gb": 1024 ** 3, "t": 1024 ** 4, "tb": 1024 ** 4}
@@ -55,9 +56,11 @@ def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
     # while SQL GLOB is not: on APFS, `--name '*.txt'` misses `Report.TXT` even
     # though the filesystem itself treats those names as interchangeable.
     # lower() rather than a collation, because GLOB ignores COLLATE.
+    root_key = str(Path(root).expanduser().resolve()) if root else None
     specs = (
         ("host = ?", host),
-        ("root = ?", str(Path(root).expanduser().resolve()) if root else None),
+        # Everything under the root, including rows owned by roots nested in it.
+        (roots.scope_sql(), roots.scope_params(root_key) if root_key else None),
         ("name GLOB ?", name),
         ("lower(name) GLOB ?", iname.lower() if iname else None),
         ("type = ?", kind),
@@ -70,7 +73,7 @@ def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
     for sql_fragment, value in specs:
         if value is not None:
             clauses.append(sql_fragment)
-            params.append(value)
+            params.extend(value if isinstance(value, list) else [value])
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     order_sql = {"size": "size DESC", "mtime": "mtime DESC",
@@ -183,23 +186,47 @@ def _like_prefix(prefix: str) -> str:
     return escaped + "%"
 
 
-def forget_root(conn, path: str, host: str) -> tuple[int, bool]:
-    """Drop a root and everything indexed under it.
+@dataclass
+class Forgotten:
+    removed: int = 0
+    known: bool = False
+    # Rows handed to the root that encloses the forgotten one: it still covers
+    # them, so deleting them would only mean re-hashing them on its next scan.
+    handed_over: int = 0
+    handed_to: str | None = None
+    # Roots nested inside the forgotten one, which keep their own rows.
+    nested: list[str] = field(default_factory=list)
 
-    Returns (rows removed, whether the root was known). Touches only the index;
-    nothing on disk is read or written.
+
+def forget_root(conn, path: str, host: str) -> Forgotten:
+    """Drop a root and the rows it owns.
+
+    Rows owned by a root nested inside it are left alone; rows the forgotten
+    root owned that an enclosing root also covers are handed to that root
+    rather than deleted. Touches only the index; nothing on disk is read or
+    written.
     """
     root_key = str(Path(path).expanduser().resolve())
-    known = conn.execute(
+    out = Forgotten()
+    out.known = conn.execute(
         "SELECT 1 FROM roots WHERE host = ? AND path = ?", (host, root_key)
     ).fetchone() is not None
+    if not out.known:
+        return out
 
-    removed = conn.execute(
-        "DELETE FROM files WHERE host = ? AND root = ?", (host, root_key)
-    ).rowcount
+    out.nested = roots.nested(conn, host, root_key)
+    out.handed_to = roots.enclosing(conn, host, root_key)
+    if out.handed_to is not None:
+        out.handed_over = max(conn.execute(
+            "UPDATE files SET root = ? WHERE host = ? AND root = ?",
+            (out.handed_to, host, root_key)).rowcount, 0)
+    else:
+        out.removed = max(conn.execute(
+            "DELETE FROM files WHERE host = ? AND root = ?", (host, root_key)
+        ).rowcount, 0)
     conn.execute("DELETE FROM roots WHERE host = ? AND path = ?", (host, root_key))
     conn.commit()
-    return max(removed, 0), known
+    return out
 
 
 def stat_one(conn, path: str, host=None):

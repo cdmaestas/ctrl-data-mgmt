@@ -12,6 +12,11 @@ a hang or a lie:
   and hardlinked directory trees.
 * Rehashing is skipped when size and mtime are unchanged, so a rescan of a
   quiet tree costs one stat per file.
+* The index's own files are never opened. Closing ANY descriptor to a file
+  drops every POSIX lock this process holds on it, SQLite's included; hashing
+  index.db-shm mid-scan let a concurrent reader decide it was the last
+  connection and delete -wal and -shm out from under the writer. Observed: a
+  SIGBUS in walFindFrame scanning $HOME while another process read the index.
 
 CONCURRENCY
 
@@ -42,9 +47,12 @@ from datetime import datetime
 from pathlib import Path
 
 from . import hashing
+from . import roots as roots_mod
 from .exclude import Excluder
 
 PROGRESS_EVERY = 5000
+# ...or this often, whichever comes first, so a slow filesystem still reports.
+PROGRESS_SECONDS = 1.0
 QUEUE_DEPTH = 64
 COMMIT_EVERY_DIRS = 200
 COMMIT_EVERY_ROWS = 5000
@@ -68,9 +76,11 @@ class ScanStats:
     dirs: int = 0
     links: int = 0
     hashed: int = 0
+    hashed_bytes: int = 0
     reused_hashes: int = 0
     pruned: int = 0
     unreadable: list[str] = field(default_factory=list)
+    started: float = 0.0
     elapsed: float = 0.0
     threads: int = 1
     resumed_from: int = 0
@@ -79,6 +89,24 @@ class ScanStats:
     @property
     def total(self) -> int:
         return self.files + self.dirs + self.links
+
+    @property
+    def running_for(self) -> float:
+        """Seconds so far: final once the scan returns, live while it runs."""
+        if self.elapsed:
+            return self.elapsed
+        return time.time() - self.started if self.started else 0.0
+
+    def rates(self) -> tuple[float, float]:
+        """(entries per second, hashed bytes per second) for THIS run.
+
+        A resumed scan only counts what it did itself, so these are honest
+        throughput figures rather than inflated by checkpointed work.
+        """
+        secs = self.running_for
+        if secs <= 0:
+            return 0.0, 0.0
+        return self.total / secs, self.hashed_bytes / secs
 
 
 def _open_scan(conn, host, root_key, hash_kind, resume):
@@ -112,7 +140,22 @@ def _open_scan(conn, host, root_key, hash_kind, resume):
     return scan_id, stamp, set()
 
 
-def _resumed_children(conn, host, root_key, stamp, completed):
+def _index_files(conn) -> frozenset[str]:
+    """Paths of the database behind `conn` and its sidecars, resolved.
+
+    Empty for an in-memory or temporary database, which has nothing on disk
+    for the walk to stumble into.
+    """
+    names = set()
+    for row in conn.execute("PRAGMA database_list"):
+        main = row[2]
+        if main:
+            base = str(Path(main).resolve())
+            names.update(base + suffix for suffix in ("", "-wal", "-shm", "-journal"))
+    return frozenset(names)
+
+
+def _resumed_children(conn, host, owners, stamp, completed):
     """Map each completed directory to its subdirectories, from the index.
 
     On resume the index already knows what a finished directory contained, so
@@ -121,13 +164,20 @@ def _resumed_children(conn, host, root_key, stamp, completed):
     One query, not one per directory. The per-directory version made resuming a
     4,600-directory checkpoint take 19.9s against 2.5s for simply starting over
     -- a resume slower than a restart is worse than no resume at all.
+
+    `owners` is every root this scan writes rows for: its own and the roots
+    nested inside it. Looking only at its own would find no children for a
+    completed directory inside a nested root, and the walk would silently stop
+    there. `seen_at >= stamp`, not `=`, for the same reason: a scan of a nested
+    root that ran since the checkpoint rewrote those rows with a later stamp.
     """
     children: dict[Path, list[Path]] = {}
     if not completed:
         return children
+    marks = ",".join("?" * len(owners))
     for parent, path in conn.execute(
-        "SELECT parent, path FROM files WHERE host = ? AND root = ? "
-        "AND type = 'dir' AND seen_at = ?", (host, root_key, stamp)
+        f"SELECT parent, path FROM files WHERE host = ? AND root IN ({marks}) "
+        f"AND type = 'dir' AND seen_at >= ?", (host, *owners, stamp)
     ):
         parent_path = Path(parent)
         if parent in completed:
@@ -156,22 +206,28 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
         raise NotADirectoryError(root_key)
 
     ex = excluder or Excluder()
-    stats = ScanStats(threads=threads)
+    stats = ScanStats(threads=threads, started=started)
     threads = max(1, threads)
+    own_files = _index_files(conn)
 
     scan_id, stamp, completed = _open_scan(conn, host, root_key, hash_kind, resume)
     if now is not None:
         stamp = now
     stats.resumed_from = len(completed)
 
+    # Rows below this root are owned by the most specific registered root (see
+    # roots.py), so hashes to reuse are found by path, never by owner.
+    lo, hi = roots_mod.bounds(root_key)
     known = {
         r["path"]: r for r in conn.execute(
             "SELECT path, size, mtime, hash, hash_kind, hash_size, hash_mtime "
-            "FROM files WHERE host = ? AND root = ?", (host, root_key))
+            "FROM files WHERE host = ? AND path >= ? AND path < ?", (host, lo, hi))
     }
+    inner = roots_mod.nested(conn, host, root_key)
+    owners = [root_key, *inner]
 
     # Pre-computed in the main thread: walkers must never touch the connection.
-    resumed_children = _resumed_children(conn, host, root_key, stamp, completed)
+    resumed_children = _resumed_children(conn, host, owners, stamp, completed)
 
     work: queue.Queue = queue.Queue()
     out: queue.Queue = queue.Queue(maxsize=QUEUE_DEPTH)
@@ -209,6 +265,9 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
                     prior["hash_mtime"])
         if max_hash_bytes is not None and size > max_hash_bytes:
             return None, None, None, None
+        # Indexed, but never opened: see "The index's own files" above.
+        if str(path) in own_files:
+            return None, None, None, None
         try:
             digest = hashing.compute(path, size, hash_kind)
         except OSError:
@@ -217,6 +276,7 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
             return None, None, None, None
         with lock:
             stats.hashed += 1
+            stats.hashed_bytes += hashing.bytes_read(size, hash_kind)
         return digest, hash_kind, size, st.st_mtime
 
     def walk_one(directory: Path):
@@ -230,6 +290,7 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
         """
         rows, subdirs = [], []
         local = {"files": 0, "dirs": 0, "links": 0}
+        owner = roots_mod.owner(str(directory), root_key, inner)
         try:
             entries = list(os.scandir(directory))
         except OSError:
@@ -266,7 +327,7 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
                 local["files"] += 1
 
             digest, dkind, dsize, dmtime = hash_for(path, st, kind)
-            rows.append((host, root_key, str(path), str(path.parent), path.name,
+            rows.append((host, owner, str(path), str(path.parent), path.name,
                          st.st_size, st.st_mtime, st.st_ctime, st.st_ino, kind,
                          digest, dkind, dsize, dmtime, stamp))
 
@@ -326,6 +387,7 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
 
     pending_rows = pending_dirs = 0
     last_progress = 0
+    last_progress_at = time.time()
     while True:
         item = out.get()
         if item is None:
@@ -343,8 +405,11 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
         if pending_rows >= COMMIT_EVERY_ROWS or pending_dirs >= COMMIT_EVERY_DIRS:
             conn.commit()
             pending_rows = pending_dirs = 0
-        if progress is not None and stats.total - last_progress >= PROGRESS_EVERY:
+        if progress is not None and (
+                stats.total - last_progress >= PROGRESS_EVERY
+                or time.time() - last_progress_at >= PROGRESS_SECONDS):
             last_progress = stats.total
+            last_progress_at = time.time()
             progress(stats)
 
     reaper.join()
@@ -372,11 +437,15 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
     # scan_dirs holds exactly the directories that were successfully read, so
     # restricting the delete to their children means absence is only ever
     # inferred from a directory we could actually see into.
+    #
+    # Rows owned by a nested root are pruned too: this scan read those
+    # directories just as thoroughly as the nested root's own scan would.
+    marks = ",".join("?" * len(owners))
     cur = conn.execute(
-        "DELETE FROM files WHERE host = ? AND root = ? AND seen_at < ? "
-        "AND parent IN (SELECT path FROM scan_dirs "
-        "               WHERE host = ? AND root = ? AND scan_id = ?)",
-        (host, root_key, stamp, host, root_key, scan_id))
+        f"DELETE FROM files WHERE host = ? AND root IN ({marks}) AND seen_at < ? "
+        f"AND parent IN (SELECT path FROM scan_dirs "
+        f"               WHERE host = ? AND root = ? AND scan_id = ?)",
+        (host, *owners, stamp, host, root_key, scan_id))
     stats.pruned = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     conn.execute(

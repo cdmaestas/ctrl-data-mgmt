@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from cdm import db, paths, query
+from cdm import scan as scan_mod
 from cdm.scan import PROGRESS_EVERY, scan_root
 
 HOST = "testhost"
@@ -109,9 +110,9 @@ def test_forget_removes_rows_and_the_root(conn, tree):
     before = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
     assert before > 0
 
-    removed, known = query.forget_root(conn, str(tree), HOST)
-    assert known is True
-    assert removed == before
+    out = query.forget_root(conn, str(tree), HOST)
+    assert out.known is True
+    assert out.removed == before
     assert conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM roots").fetchone()[0] == 0
 
@@ -131,8 +132,8 @@ def test_forget_leaves_other_roots_alone(conn, tmp_path):
 
 
 def test_forget_an_unknown_root_reports_it(conn, tmp_path):
-    removed, known = query.forget_root(conn, str(tmp_path / "never-scanned"), HOST)
-    assert (removed, known) == (0, False)
+    out = query.forget_root(conn, str(tmp_path / "never-scanned"), HOST)
+    assert (out.removed, out.known) == (0, False)
 
 
 def test_forget_does_not_touch_the_filesystem(conn, tree):
@@ -141,9 +142,107 @@ def test_forget_does_not_touch_the_filesystem(conn, tree):
     assert (tree / "loose.txt").exists()
 
 
+# --- nested roots ----------------------------------------------------------
+
+@pytest.fixture()
+def nested(conn, tree):
+    """`tree` and `tree/big` both registered, scanned outer first then inner."""
+    scan_root(conn, HOST, tree, hash_kind="partial")
+    scan_root(conn, HOST, tree / "big", hash_kind="partial")
+    return tree, tree / "big"
+
+
+def owners(conn):
+    return {r["name"]: r["root"] for r in conn.execute("SELECT name, root FROM files")}
+
+
+def test_forget_the_outer_root_keeps_the_nested_roots_rows(conn, nested):
+    outer, inner = nested
+    out = query.forget_root(conn, str(outer), HOST)
+    assert out.nested == [str(inner)]
+    # big/ itself, small/, small/c.txt, loose.txt -- not what is inside big/.
+    assert out.removed == 4
+    left = owners(conn)
+    assert left == {"a.bin": str(inner), "deep": str(inner), "b.bin": str(inner)}
+    assert [r[0] for r in conn.execute("SELECT path FROM roots")] == [str(inner)]
+
+
+def test_forget_the_nested_root_hands_its_rows_to_the_outer_one(conn, nested):
+    """The outer root still covers them; deleting would only force a re-hash."""
+    outer, inner = nested
+    total = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    out = query.forget_root(conn, str(inner), HOST)
+    assert (out.removed, out.handed_over, out.handed_to) == (0, 3, str(outer))
+    assert conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == total
+    assert set(owners(conn).values()) == {str(outer)}
+
+    stats = scan_root(conn, HOST, outer, hash_kind="partial")
+    assert stats.hashed == 0
+
+
+def test_du_and_dupes_count_each_file_once_with_nested_roots(conn, nested):
+    outer, _ = nested
+    (outer / "big" / "copy.bin").write_bytes(b"x" * 3000)   # same as a.bin
+    scan_root(conn, HOST, outer, hash_kind="partial")
+    scan_root(conn, HOST, outer / "big", hash_kind="partial")
+
+    rows = query.disk_usage(conn, str(outer), depth=1)
+    assert sum(r["bytes"] for r in rows) == 3000 + 3000 + 5000 + 100 + 50
+    groups = query.dupe_groups(conn, host=HOST)
+    assert [len(g["members"]) for g in groups] == [2]
+
+
+def test_find_root_includes_nested_roots(conn, nested):
+    outer, inner = nested
+    names = {r["name"] for r in query.find(conn, host=HOST, root=str(outer), kind="file")}
+    assert names == {"a.bin", "b.bin", "c.txt", "loose.txt"}
+    names = {r["name"] for r in query.find(conn, host=HOST, root=str(inner), kind="file")}
+    assert names == {"a.bin", "b.bin"}
+
+
+def test_summary_counts_each_file_once_and_marks_nesting(conn, nested):
+    from cdm import shape
+    outer, inner = nested
+    out = shape.summary(conn, host=HOST, root=str(outer))
+    by_root = {r["root"]: r for r in out["roots"]}
+    assert by_root[str(outer)]["files"] == 2 and by_root[str(inner)]["files"] == 2
+    assert by_root[str(inner)]["inside"] == str(outer)
+    assert by_root[str(outer)]["inside"] is None
+    assert out["total_files"] == 4
+    assert shape.size_histogram(conn, host=HOST, root=str(outer))["total_files"] == 4
+
+
+def test_cli_roots_and_forget_explain_nesting(tmp_path, monkeypatch, capsys):
+    from cdm import cli
+    monkeypatch.setenv("CDM_DATA_DIR", str(tmp_path / "data"))
+    outer = tmp_path / "home"
+    (outer / "src").mkdir(parents=True)
+    (outer / "src" / "f").write_text("x")
+    (outer / "g").write_text("y")
+    outer, inner = outer.resolve(), (outer / "src").resolve()
+
+    assert cli.main(["scan", str(outer)]) == 0
+    capsys.readouterr()
+    assert cli.main(["scan", str(inner)]) == 0
+    assert f"inside root {outer}" in capsys.readouterr().err
+    # A rescan of a known root says nothing more about it.
+    assert cli.main(["scan", str(inner)]) == 0
+    assert "inside root" not in capsys.readouterr().err
+
+    assert cli.main(["roots"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.startswith(f"{inner} ") and f"(inside {outer})" in line
+               for line in lines)
+
+    assert cli.main(["forget", str(inner)]) == 0
+    assert f"now belong to {outer}" in capsys.readouterr().err
+
+
 # --- progress --------------------------------------------------------------
 
-def test_progress_is_called_on_a_big_enough_tree(conn, tmp_path):
+def test_progress_is_called_on_a_big_enough_tree(conn, tmp_path, monkeypatch):
+    # Count-triggered only; the time trigger has its own test below.
+    monkeypatch.setattr(scan_mod, "PROGRESS_SECONDS", float("inf"))
     root = tmp_path / "many"
     root.mkdir()
     for i in range(PROGRESS_EVERY + 10):
@@ -162,6 +261,24 @@ def test_progress_is_called_on_a_big_enough_tree(conn, tmp_path):
 def test_scan_without_a_progress_callback_still_works(conn, tree):
     stats = scan_root(conn, HOST, tree, progress=None)
     assert stats.files == 4
+
+
+def test_progress_is_also_time_triggered(conn, tree, monkeypatch):
+    """A slow filesystem that never reaches PROGRESS_EVERY still reports."""
+    monkeypatch.setattr(scan_mod, "PROGRESS_SECONDS", 0.0)
+    seen = []
+    scan_root(conn, HOST, tree, progress=lambda stats: seen.append(stats.running_for))
+    assert seen, "time-triggered progress never fired on a small tree"
+    assert all(t > 0 for t in seen)
+
+
+def test_rates_are_per_second_and_final_after_the_scan(conn, tree):
+    stats = scan_root(conn, HOST, tree, hash_kind="partial")
+    per_sec, bytes_per_sec = stats.rates()
+    assert stats.running_for == stats.elapsed > 0
+    assert per_sec == pytest.approx(stats.total / stats.elapsed)
+    assert stats.hashed_bytes == 3000 + 5000 + 100 + 50
+    assert bytes_per_sec == pytest.approx(stats.hashed_bytes / stats.elapsed)
 
 
 # --- CLI wiring ------------------------------------------------------------
@@ -207,3 +324,22 @@ def test_progress_is_silent_when_stderr_is_not_a_tty(tmp_path, monkeypatch, caps
     cli.main(["scan", str(root)])
     assert "scanned" not in capsys.readouterr().err
     assert paths.index_path().exists()
+
+
+def test_progress_flag_logs_rate_lines_without_a_tty(tmp_path, monkeypatch, capsys):
+    """--progress is how a background scan or a log gets a rate."""
+    from cdm import cli
+    monkeypatch.setenv("CDM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(scan_mod, "PROGRESS_SECONDS", 0.0)
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "f").write_text("x")
+
+    assert cli.main(["scan", str(root), "--checksum", "--progress", "0"]) == 0
+    err = capsys.readouterr().err
+    progress = [line for line in err.splitlines() if "scanned" in line]
+    assert progress, err
+    assert "/s)" in progress[0] and "\r" not in err
+    # The summary carries the rate too, so it is there without --progress.
+    assert "entries/s)" in err
+    assert "read, " in err
