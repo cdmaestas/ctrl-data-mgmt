@@ -64,7 +64,20 @@ Change these only deliberately, and update the man page when you do:
   unreadable directory is never checkpointed. The unscoped version deleted every
   row under a temporarily unmounted root and called them "no longer on disk";
   `tests/test_unreadable.py` guards it.
-- **stdout is data, stderr is everything else**, so pipelines stay clean.
+- **stdout is data, stderr is everything else**, so pipelines stay clean. For
+  `cdm mcp` this is stricter: stdout is the protocol channel, and one stray
+  `print()` corrupts it. `tests/test_mcp_server.py` checks that every stdout
+  line is JSON-RPC with a raw pipe, because the SDK client tolerates garbage
+  lines and would not catch it.
+- **MCP tools that return names are registered only with `--expose-names`.**
+  Not filtered — absent. Shape tools take no path arguments, and a test asserts
+  that. See [docs/adr/0002](docs/adr/0002-mcp-exposes-shape-not-names-by-default.md).
+- **All MCP behaviour lives in `cdm/tools.py`, which is stdlib-only.**
+  `cdm/mcp_server.py` only registers it with the SDK. That split is what lets
+  the Python 3.9 CI job test the tools without the SDK, which needs 3.10+.
+- **Anticipated MCP failures become `ToolError`.** The SDK deliberately hides
+  the message of any other exception, so a helpful `ValueError` reaches the
+  model as a bare "Error executing tool".
 
 ## Documentation
 

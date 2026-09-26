@@ -28,7 +28,15 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-cov>=4", "ruff>=0.5", "build>=1"]
+# The MCP SDK needs Python 3.10+ and pulls in pydantic, starlette, uvicorn and
+# more -- which is exactly why it is an extra. The core that goes onto other
+# people's clusters stays stdlib-only on 3.9; the marker makes the extra a no-op
+# there, and `cdm mcp` says why instead of failing on import.
+mcp = ["mcp>=2.2,<3; python_version >= '3.10'"]
+dev = [
+  "pytest>=7", "pytest-cov>=4", "ruff>=0.5", "build>=1",
+  "mcp>=2.2,<3; python_version >= '3.10'",
+]
 
 [project.urls]
 Homepage = "https://github.com/cdmaestas/ctrl-data-mgmt"
