@@ -41,11 +41,17 @@ one
 per file.
 .TP
 .B roots
-List indexed roots with their entry counts and last scan time.
+List indexed roots with their entry counts and last scan time. Each entry is
+counted once, under its most specific root; a root nested in another is marked
+.RI "(inside " outer ).
+See
+.BR "NESTED ROOTS" .
 .TP
 .BI "forget " path
-Remove a root and all of its rows from the index. Nothing on disk is read,
-written, or deleted.
+Remove a root and the rows it owns from the index. Rows owned by a root nested
+inside it are kept. If another root encloses it, its rows are handed to that
+root instead of deleted, since that root's scans cover them anyway. Nothing on
+disk is read, written, or deleted.
 .TP
 .BI "find " [ options ]
 Query the index. All filters are optional and combine with AND.
@@ -116,6 +122,13 @@ May be given more than once.
 .B \-\-no\-skip\-credentials
 Index credential paths, which are excluded by default. See
 .BR EXCLUSIONS .
+.TP
+.BR \-\-progress " [" \fIsecs\fR ]
+Write a timestamped line to standard error every
+.I secs
+seconds (default 10) giving entries scanned, entries per second, bytes hashed,
+hash throughput and elapsed time. Without this option the same figures are
+shown as a single updating line, and only when standard error is a terminal.
 .SH FIND OPTIONS
 .TP
 .BI \-\-name " glob"
@@ -146,7 +159,7 @@ Filter on size. See
 Filter on mtime.
 .TP
 .BI \-\-root " path"
-Restrict results to one root.
+Restrict results to one root, including any roots nested inside it.
 .TP
 .BI \-\-order " {size|mtime|name|path}"
 Sort order. Default
@@ -258,6 +271,34 @@ would leave part of the tree hashed and part not, with nothing recording which
 part.
 .PP
 Checkpoints are deleted when a scan completes.
+.PP
+A root may contain the index itself, as a scan of the home directory does.
+Those files are recorded but never opened for hashing: closing any descriptor
+to a file drops every POSIX lock the process holds on it, and losing SQLite's
+locks lets another process delete the write\-ahead log while the scan is still
+using it.
+.SH NESTED ROOTS
+Roots may overlap, for example
+.I ~
+and
+.I ~/src
+both registered. Each path has a single row in the index, owned by the most
+specific root containing it no matter which scan wrote it last. A scan of
+either root reuses hashes the other computed, and prunes vanished files in
+every directory it read, including those owned by a nested root.
+.PP
+.B "find \-\-root"
+and the MCP tools scoped to a root include the roots nested inside it.
+.B du
+and
+.B dupes
+work by path, so overlapping roots are never counted twice.
+.PP
+The cost is that
+.B "cdm rescan"
+walks the overlap once per root.
+.B "cdm scan"
+notes when a new root overlaps an existing one.
 .SH MCP SERVER
 .B "cdm mcp"
 lets an MCP client such as Claude Code or Claude Desktop answer plain\-language

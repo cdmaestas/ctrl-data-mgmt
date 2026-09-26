@@ -17,7 +17,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import db, hashing, paths, probe, query
+from . import db, hashing, paths, probe, query, roots
 from .exclude import Excluder
 from .scan import scan_root
 
@@ -86,24 +86,56 @@ def _excluder(args) -> Excluder:
                     skip_credentials=not getattr(args, "no_skip_credentials", False))
 
 
-def _progress_printer():
-    """A progress callback, but only when someone is watching.
+def human_duration(secs: float) -> str:
+    secs = int(secs)
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m{secs % 60:02d}s"
+    return f"{secs // 3600}h{secs % 3600 // 60:02d}m"
+
+
+def _progress_line(stats) -> str:
+    per_sec, bytes_per_sec = stats.rates()
+    line = f"scanned {stats.total:,} entries ({per_sec:,.0f}/s)"
+    if stats.hashed:
+        line += (f", hashed {human_size(stats.hashed_bytes)} "
+                 f"({human_size(bytes_per_sec)}/s)")
+    return line + f", {human_duration(stats.running_for)}"
+
+
+def _progress_printer(every: float | None = None):
+    """A progress callback, but only when someone is watching -- or asked.
 
     Writing \\r-updated counters into a log file or a CI transcript produces
-    thousands of useless lines, so this is a no-op unless stderr is a terminal.
+    thousands of useless lines, so without `every` this is a no-op unless
+    stderr is a terminal. With `every` (--progress), one timestamped line is
+    written per interval wherever stderr goes, which is what a background scan
+    or a log needs.
     """
+    if every is not None:
+        last = [0.0]
+
+        def log(stats) -> None:
+            now = time.time()
+            if now - last[0] >= every:
+                last[0] = now
+                _err(f"  {time.strftime('%H:%M:%S')}  {_progress_line(stats)}")
+        return log
+
     if not sys.stderr.isatty():
         return None
 
     def show(stats) -> None:
-        print(f"\r  scanned {stats.total:,} entries...", end="", file=sys.stderr,
+        # \x1b[K clears whatever a longer previous line left behind.
+        print(f"\r  {_progress_line(stats)}\x1b[K", end="", file=sys.stderr,
               flush=True)
     return show
 
 
 def _clear_progress() -> None:
     if sys.stderr.isatty():
-        print("\r" + " " * 40 + "\r", end="", file=sys.stderr)
+        print("\r\x1b[K", end="", file=sys.stderr)
 
 
 def _report_scan(root: Path, stats, ex: Excluder) -> None:
@@ -116,15 +148,17 @@ def _report_scan(root: Path, stats, ex: Excluder) -> None:
         _err("     Check permissions, whether the filesystem is mounted, and on "
              "macOS whether the path needs Full Disk Access.")
         return
+    per_sec, bytes_per_sec = stats.rates()
     _err(f"{root}: {stats.files} files, {stats.dirs} dirs, {stats.links} links "
-         f"in {stats.elapsed:.1f}s")
+         f"in {stats.elapsed:.1f}s ({per_sec:,.0f} entries/s)")
     if stats.threads > 1:
         _err(f"  {stats.threads} walker threads")
     if stats.resumed_from:
         _err(f"  resumed from a checkpoint: {stats.resumed_from} "
              f"director{'y' if stats.resumed_from == 1 else 'ies'} already done")
     if stats.hashed or stats.reused_hashes:
-        _err(f"  hashed {stats.hashed}, reused {stats.reused_hashes} unchanged")
+        _err(f"  hashed {stats.hashed} ({human_size(stats.hashed_bytes)} read, "
+             f"{human_size(bytes_per_sec)}/s), reused {stats.reused_hashes} unchanged")
     if stats.pruned:
         _err(f"  dropped {stats.pruned} row(s) for files no longer on disk")
     for line in ex.report():
@@ -147,14 +181,31 @@ def cmd_scan(args, conn) -> int:
             _err(f"cdm: not a directory: {root}")
             rc = 2
             continue
+        root_key = str(root.resolve())
+        is_new = conn.execute("SELECT 1 FROM roots WHERE host = ? AND path = ?",
+                              (host, root_key)).fetchone() is None
         stats = scan_root(conn, host, root, hash_kind=kind, max_hash_bytes=cap,
-                          excluder=ex, progress=_progress_printer(),
+                          excluder=ex, progress=_progress_printer(args.progress),
                           threads=_threads_for(args, root),
                           resume=not args.restart)
         _report_scan(root.resolve(), stats, ex)
         if stats.root_unreadable:
             rc = 1
+        elif is_new:
+            _report_nesting(conn, host, root_key)
     return rc
+
+
+def _report_nesting(conn, host: str, root_key: str) -> None:
+    """Say so when a new root overlaps an old one. Legal, but not free."""
+    outer = roots.enclosing(conn, host, root_key)
+    if outer:
+        _err(f"  inside root {outer}: entries below here now belong to this root, "
+             f"and `cdm rescan` walks them twice (hashes are reused)")
+    for inner in roots.nested(conn, host, root_key):
+        _err(f"  contains root {inner}, which keeps its own entries")
+    if outer or roots.nested(conn, host, root_key):
+        _err("  `cdm forget` either root to stop the overlap")
 
 
 @with_index
@@ -182,7 +233,7 @@ def cmd_rescan(args, conn) -> int:
             rc = 2
             continue
         stats = scan_root(conn, host, root, hash_kind=kind, max_hash_bytes=cap,
-                          excluder=ex, progress=_progress_printer(),
+                          excluder=ex, progress=_progress_printer(args.progress),
                           threads=_threads_for(args, root),
                           resume=not args.restart)
         _report_scan(root, stats, ex)
@@ -203,8 +254,12 @@ def cmd_roots(args, conn) -> int:
         _err("no roots yet. Add one with `cdm scan <path>`.")
         return 0
     for r in rows:
+        # Entries count once, under their most specific root: a root's count
+        # leaves out whatever a root nested in it owns.
+        outer = roots.enclosing(conn, r["host"], r["path"])
+        inside = f"  (inside {outer})" if outer else ""
         print(f"{r['path']}  ({r['host']})  {r['n']} entries  "
-              f"last scan {r['last_scan'] or 'never'}")
+              f"last scan {r['last_scan'] or 'never'}{inside}")
     return 0
 
 
@@ -300,13 +355,20 @@ def cmd_du(args, conn) -> int:
 @with_index
 def cmd_forget(args, conn) -> int:
     host = paths.this_host()
-    removed, known = query.forget_root(conn, args.path, host)
-    if not known:
+    out = query.forget_root(conn, args.path, host)
+    if not out.known:
         _err(f"cdm: not a known root: {args.path}")
         _err("     `cdm roots` lists what is indexed.")
         return 1
-    _err(f"forgot {args.path}: {removed} row(s) removed from the index "
-         f"(nothing on disk was touched)")
+    if out.handed_to:
+        _err(f"forgot {args.path}: its {out.handed_over} row(s) now belong to "
+             f"{out.handed_to}, which also covers them; forget that root too to "
+             f"drop them (nothing on disk was touched)")
+    else:
+        _err(f"forgot {args.path}: {out.removed} row(s) removed from the index "
+             f"(nothing on disk was touched)")
+    for inner in out.nested:
+        _err(f"  kept {inner}: a root of its own, with its own rows")
     return 0
 
 
@@ -455,6 +517,9 @@ def _add_scan_flags(p) -> None:
                    help="skip paths matching this glob (repeatable)")
     p.add_argument("--no-skip-credentials", action="store_true",
                    help="index credential paths too (off by default, on purpose)")
+    p.add_argument("--progress", nargs="?", type=float, const=10.0, metavar="SECS",
+                   help="log a timestamped rate line every SECS seconds (default "
+                        "10) even when stderr is not a terminal")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -492,7 +557,7 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--smaller-than", metavar="SIZE")
     f.add_argument("--modified-after", metavar="WHEN", help="7d, 24h, or 2026-08-01")
     f.add_argument("--modified-before", metavar="WHEN")
-    f.add_argument("--root", metavar="PATH", help="restrict to one root")
+    f.add_argument("--root", metavar="PATH", help="restrict to one root (and roots nested in it)")
     f.add_argument("--order", choices=["size", "mtime", "name", "path"], default="size")
     f.add_argument("--limit", type=int, default=100)
     f.add_argument("--all-hosts", action="store_true")
