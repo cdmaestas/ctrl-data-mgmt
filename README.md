@@ -267,9 +267,9 @@ a tree hashed with nothing recording which half.
 ## Documentation
 
 - **`man/cdm.1`** — the reference: every verb, every flag, exit statuses,
-  environment variables. Read it from a checkout with `man ./man/cdm.1`. It
-  installs to `share/man/man1`, though a pipx or venv install puts that inside
-  the venv rather than on your `MANPATH`.
+  environment variables. Read it from a checkout with `man ./man/cdm.1`. A pipx
+  install links it into `~/.local/share/man`, so `man cdm` just works; a plain
+  virtualenv install leaves it inside the venv.
 - **[docs/multi-host.md](docs/multi-host.md)** — design note on scanning many
   hosts with `pdsh`, and why the index must never live on the shared filesystem.
   Not implemented; recorded so the decisions that keep it cheap survive.
