@@ -54,6 +54,13 @@ def full_hash(path: Path) -> str:
     return h.hexdigest()
 
 
+def bytes_read(size: int, kind: str) -> int:
+    """How many bytes compute() reads for a file of `size`, for throughput."""
+    if kind == FULL:
+        return size
+    return min(size, WINDOW) + (WINDOW if size > 2 * WINDOW else 0)
+
+
 def compute(path: Path, size: int, kind: str) -> str:
     if kind == FULL:
         return full_hash(path)

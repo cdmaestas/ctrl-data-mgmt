@@ -36,7 +36,9 @@ MAX_ROWS = 500
 
 SHAPE_TOOLS = {
     "summary": "Per-root totals (files, directories, bytes) and how many days "
-               "since each root was last scanned. Start here.",
+               "since each root was last scanned. Start here. A root nested in "
+               "another has `inside` set; each file is counted once, under its "
+               "most specific root, so per-root figures add up to the total.",
     "size_histogram": "How many files, and how many bytes, fall in each size "
                       "range. Answers 'is the space in a few huge files or many "
                       "small ones'.",

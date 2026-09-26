@@ -5,8 +5,8 @@ where things went, what's eating your disk, and what you're storing twice.
 
 ```console
 $ cdm scan ~/work --checksum
-/Users/you/work: 48210 files, 3115 dirs, 12 links in 41.2s
-  hashed 48210, reused 0 unchanged
+/Users/you/work: 48210 files, 3115 dirs, 12 links in 41.2s (1,246 entries/s)
+  hashed 48210 (3.1G read, 76.4M/s), reused 0 unchanged
   skipped 3 credential path(s) (--no-skip-credentials to include)
 
 $ cdm find --larger-than 500M --modified-before 90d
@@ -73,6 +73,24 @@ cdm find --root ~/work --json
 Sizes take binary units (`4096`, `1k`, `100M`, `2.5G`). Times take a relative
 span (`7d`, `24h`) or a date (`2026-08-01`). `--quiet` prints bare paths for
 piping; everything advisory goes to stderr, so pipelines stay clean.
+
+### Nested roots
+
+Roots may overlap: `~` and `~/src` can both be registered, say to rescan
+`~/src` more often. Each file is indexed once and belongs to the **most
+specific** root that contains it, whichever scan saw it last, so:
+
+- a scan of either root reuses the hashes the other one computed;
+- `cdm roots` counts each entry once, and a root's count leaves out what a root
+  nested in it owns; the nested root is marked `(inside ~)`;
+- `find --root ~` and the MCP tools scoped to `~` include `~/src`; `du` and
+  `dupes` work by path and never double-count;
+- `forget ~/src` hands its rows to `~`, which still covers them, rather than
+  deleting them; `forget ~` drops only what `~` itself owns and leaves `~/src`
+  whole.
+
+The cost is walking the overlap twice on `cdm rescan`; `cdm scan` says so when
+a new root overlaps an existing one.
 
 ## Hashing: two kinds, never confused
 
@@ -209,6 +227,11 @@ of per-host indexes rather than a migration of an index you've come to rely on.
 A stat-only pass runs at roughly 30k entries/second on a warm local disk — about
 3 seconds for 99,000 entries. A rescan of a quiet tree costs one `stat` per file
 and reuses every hash.
+
+On a terminal, a scan shows a live line with entries/second, hash throughput and
+elapsed time. When stderr is a log or the scan runs in the background, add
+`--progress` (every 10s, or `--progress SECS`) to get the same figures as
+timestamped lines; the final summary always includes the rate.
 
 Remote filesystems are a different problem: at a realistic 0.5ms metadata round
 trip a single thread manages only ~1,600 entries/second, so the walk is

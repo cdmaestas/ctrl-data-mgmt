@@ -19,6 +19,8 @@ import re
 import time
 from datetime import datetime
 
+from . import roots as roots_mod
+
 KB, MB, GB = 1024, 1024 ** 2, 1024 ** 3
 
 # (label, upper bound exclusive). Binary units, matching parse_size and df.
@@ -55,8 +57,9 @@ def _scope(host: str | None, root: str | None, *, table: str = "") -> tuple[str,
         clauses.append(f"{prefix}host = ?")
         params.append(host)
     if root is not None:
-        clauses.append(f"{prefix}root = ?")
-        params.append(root)
+        # The root and every root nested inside it: see roots.py.
+        clauses.append(roots_mod.scope_sql(f"{prefix}root"))
+        params.extend(roots_mod.scope_params(root))
     return (" AND ".join(clauses) or "1=1"), params
 
 
@@ -86,10 +89,12 @@ def summary(conn, *, host: str | None = None, root: str | None = None,
             # Directory inode sizes are not the space their contents occupy.
             entry["bytes"] = r["bytes"]
 
+    # Scoped to a root, the answer lists it and the roots nested inside it. Each
+    # row is counted once, under its most specific root, so the totals add up.
     rwhere, rparams = _scope(host, None)
     if root is not None:
-        rwhere += " AND path = ?"
-        rparams.append(root)
+        rwhere += " AND " + roots_mod.scope_sql("path")
+        rparams.extend(roots_mod.scope_params(root))
     roots = []
     for r in conn.execute(
         f"SELECT host, path, last_scan FROM roots WHERE {rwhere} ORDER BY path", rparams
@@ -101,6 +106,9 @@ def summary(conn, *, host: str | None = None, root: str | None = None,
             age_days = round((now - scanned) / DAY, 2)
         roots.append({"root": r["path"], "host": r["host"], **c,
                       "size": human(c["bytes"]),
+                      # Set when this root is nested in another, whose counts
+                      # then leave this one's rows out.
+                      "inside": roots_mod.enclosing(conn, r["host"], r["path"]),
                       "last_scan": r["last_scan"], "last_scan_age_days": age_days})
 
     total_files = sum(r["files"] for r in roots)
