@@ -92,7 +92,8 @@ def test_shape_tools_take_no_path_arguments(indexed):
     catalog, _, _ = indexed
     for name in tools.SHAPE_TOOLS:
         params = set(inspect.signature(getattr(catalog, name)).parameters)
-        assert params <= {"root", "limit"}, f"{name} takes {params}"
+        # older_than_days is an int threshold for `suggest`: it cannot carry a path.
+        assert params <= {"root", "limit", "older_than_days"}, f"{name} takes {params}"
 
 
 def test_tool_sets_are_disjoint_and_all_implemented():

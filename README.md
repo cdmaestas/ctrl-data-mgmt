@@ -50,6 +50,7 @@ cdm roots                     # what's watched, and when it was last scanned
 | `cdm find [filters]` | query the index |
 | `cdm du [PATH]` | disk usage by subdirectory, answered from the index |
 | `cdm dupes` | files that look identical |
+| `cdm suggest` | ranked things worth doing, with the command for each |
 | `cdm stat PATH` | everything the index knows about one file |
 | `cdm doctor` | index health, stale hashes, roots that have gone away |
 
@@ -91,6 +92,40 @@ specific** root that contains it, whichever scan saw it last, so:
 
 The cost is walking the overlap twice on `cdm rescan`; `cdm scan` says so when
 a new root overlaps an existing one.
+
+## What to do about it: `cdm suggest`
+
+`suggest` reads the index and says what is worth doing, biggest first, with the
+command for each. It changes nothing: you decide and you run the commands.
+
+```console
+$ cdm suggest
+ 1  review    9.2G  Large git histories
+                     Repacking usually shrinks history; a shallow re-clone shrinks
+                     it most if you do not need the history locally.
+                        7.8G  /Users/you/src/carbon/.git  (639 files, newest 2026-06-28)
+                              $ git -C /Users/you/src/carbon gc --aggressive --prune=now
+ 2  safe      1.1G  Clear npm cache
+                     Rebuilt automatically when needed.
+                        1.1G  /Users/you/.npm/_cacache  (5,031 files, newest 2026-09-26)
+                     $ npm cache clean --force
+```
+
+Each suggestion has a risk: **none** is index housekeeping (a stale scan, an
+unhashed root), **safe** regenerates on its own (package caches), and **review**
+means look first (build output, old installers, model files, large git
+histories, duplicates, app caches). The rules are conservative on purpose:
+
+- "Not modified" is judged by **mtime**, because that is what the index records.
+  It is not last access — a model you load daily looks just as old — so nothing
+  judged by age alone is ever called safe.
+- Dependencies and build output count only **inside a git checkout**, where
+  "rebuild it" is actually true.
+- A cache inside another listed cache is never counted twice, but savings can
+  overlap between suggestions (a duplicate inside a cache appears in both).
+
+`--older-than 30d` changes the staleness threshold, `--root` narrows to one root,
+`--all` lists every path, and `--json` gives the same data the MCP tool returns.
 
 ## Hashing: two kinds, never confused
 
@@ -181,10 +216,18 @@ the server answers from the *shape* of your data, not its names:
 | `age_histogram` | how much of this is cold |
 | `extensions` | what kind of data is taking the space |
 | `duplicates_summary` | how much looks duplicated, how much is confirmed |
+| `suggest` | what is worth doing, ranked, with risk and command (no paths) |
+
+To make it easy to start, the server also offers **prompts** — *What's using my
+disk?*, *What can I clean up?*, *How much is duplicated?*, *What changed
+recently?*, *Is the index up to date?* — which Claude Code lists as slash
+commands. Every tool result carries `next_steps` pointing at the next useful
+tool, and the model is told to show `suggest`'s commands, never run them.
 
 Start it with `--expose-names` to add `find`, `du`, `dupes` and `stat`, which
-return paths. Without the flag those tools aren't filtered, they're **not
-registered at all**, so a client can't call them or even learn they exist.
+return paths, and to let `suggest` list the paths behind each suggestion.
+Without the flag those tools aren't filtered, they're **not registered at all**,
+so a client can't call them or even learn they exist.
 
 The server is read-only in the strong sense: it opens the index with SQLite's
 read-only mode, so a write is refused by SQLite itself. It never walks
@@ -297,6 +340,8 @@ a tree hashed with nothing recording which half.
 - **[docs/multi-host.md](docs/multi-host.md)** — design note on scanning many
   hosts with `pdsh`, and why the index must never live on the shared filesystem.
   Not implemented; recorded so the decisions that keep it cheap survive.
+- **[docs/adr/](docs/adr/)** — decision records: why names are opt-in over MCP
+  (0002), and why suggestions come from one advisory engine (0003).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — setup, and the list of choices that
   are deliberate rather than accidental.
 - **[docs/releasing.md](docs/releasing.md)** — how a release happens, and the
