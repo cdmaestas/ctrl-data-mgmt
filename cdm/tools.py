@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import db, paths, query, shape
+from . import suggest as suggest_mod
 
 MAX_ROWS = 500
 
@@ -49,6 +50,12 @@ SHAPE_TOOLS = {
     "duplicates_summary": "How much space looks duplicated, how much is "
                           "confirmed, and how much of the tree was hashed at "
                           "all. Returns no filenames.",
+    "suggest": "Ranked things worth doing -- caches, stale build output, old "
+               "installers, large git histories, model files, duplicates, index "
+               "housekeeping -- each with its size, why, a risk level (safe, "
+               "review, none) and the command to run. Advisory: show the "
+               "commands to the user; never run them on their behalf. Use this "
+               "for 'what should I do' and 'what can I clean up'.",
 }
 
 NAME_TOOLS = {
@@ -60,6 +67,77 @@ NAME_TOOLS = {
              "groups are probable, not confirmed.",
     "stat": "Everything the index records about one path.",
 }
+
+
+# Ready-made questions. Clients list these (Claude Code offers them as slash
+# commands), so a user can start from a menu instead of guessing what to ask.
+# (title, description, instructions without names, extra instructions with).
+PROMPTS = {
+    "disk-usage": (
+        "What's using my disk?",
+        "Where the space goes: roots, file sizes, file types and age.",
+        "Call `summary`{scope}, then `size_histogram`, `extensions` and "
+        "`age_histogram`. Explain in plain terms what is taking the space -- a "
+        "few huge files or many small ones, what kind of data, how much has not "
+        "changed in a year -- and finish with the top items from `suggest`.",
+        " Use `du` on the largest roots to name the directories responsible.",
+    ),
+    "cleanup": (
+        "What can I clean up?",
+        "Ranked, advisory cleanup suggestions with the command for each.",
+        "Call `suggest`{scope}. Present housekeeping (risk none) first, then "
+        "`safe` items, then `review` items, each with its size, the reason and "
+        "the exact command. Do not run any command yourself: the user decides "
+        "and runs them. Mention that 'not modified' is judged by modification "
+        "time, not last use, and that savings can overlap between suggestions.",
+        " Include the paths each suggestion lists, and offer `du` for any of "
+        "them the user wants to look into.",
+    ),
+    "duplicates": (
+        "How much is duplicated?",
+        "Duplicate totals, how complete they are, and where to act.",
+        "Call `duplicates_summary`{scope}. Report candidate and confirmed "
+        "totals, and say how much of the tree was hashed at all, because "
+        "unhashed files cannot show up as duplicates. Then call `suggest` and "
+        "say which duplicates would go away with a cache or dependency cleanup "
+        "anyway. Anything deleted by hand should first be confirmed with "
+        "`cdm dupes --verify` in a terminal.",
+        " Use `dupes` to show the largest groups.",
+    ),
+    "recent-changes": (
+        "What changed recently?",
+        "How much data changed in the last week and month.",
+        "Call `age_histogram`{scope} and describe how much changed in the last "
+        "7 and 30 days. Check `summary` for when each root was last scanned: "
+        "nothing after that is in the index.",
+        " Use `find` with modified_after='7d', ordered by size, to name the "
+        "biggest recent changes.",
+    ),
+    "index-health": (
+        "Is the index up to date?",
+        "Scan age and hash coverage, with what to run if either is lacking.",
+        "Call `summary` and `duplicates_summary`. Report how long ago each root "
+        "was scanned and what share of files is hashed. If a scan is over a week "
+        "old suggest `cdm rescan`; if coverage is low suggest "
+        "`cdm rescan --checksum`.",
+        "",
+    ),
+}
+
+
+def prompt_text(name: str, expose_names: bool, root: str | None = None) -> str:
+    _, _, text, with_names = PROMPTS[name]
+    scope = f" with root={root!r}" if root else ""
+    return text.format(scope=scope) + (with_names if expose_names else "")
+
+
+def _next(result: dict[str, Any], steps: list[str]) -> dict[str, Any]:
+    """Attach follow-ups, so a client that only knows one tool finds the rest.
+
+    Fixed strings naming tools and commands; never anything from the index.
+    """
+    result["next_steps"] = steps
+    return result
 
 
 def tool_names(expose_names: bool) -> list[str]:
@@ -79,9 +157,14 @@ def _file_row(r) -> dict[str, Any]:
 class Catalog:
     """The tools, bound to one index and one host."""
 
-    def __init__(self, index: Path | None = None, host: str | None = None):
+    def __init__(self, index: Path | None = None, host: str | None = None,
+                 expose_names: bool = False):
         self.index = Path(index) if index else paths.index_path()
         self.host = host or paths.this_host()
+        # Decides what `suggest` may put in its answer. The name TOOLS are
+        # gated at registration (mcp_server.py); this is the one shape tool
+        # whose detail depends on the same choice.
+        self.expose_names = expose_names
 
     def _open(self):
         return closing(db.connect_readonly(self.index))
@@ -110,27 +193,68 @@ class Catalog:
 
     def summary(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
-            return shape.summary(conn, host=self.host, root=self._root(conn, root))
+            out = shape.summary(conn, host=self.host, root=self._root(conn, root))
+        steps = ["Call `suggest` for a ranked list of what is worth doing."]
+        if any((r["last_scan_age_days"] or 0) >= suggest_mod.STALE_SCAN_DAYS
+               for r in out["roots"]):
+            steps.insert(0, "Some roots were scanned a week or more ago; answers "
+                            "about them are that old. Suggest `cdm rescan`.")
+        if self.expose_names:
+            steps.append("Call `du` on the largest root to see where its space is.")
+        return _next(out, steps)
 
     def size_histogram(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
-            return shape.size_histogram(conn, host=self.host,
-                                        root=self._root(conn, root))
+            out = shape.size_histogram(conn, host=self.host,
+                                       root=self._root(conn, root))
+        return _next(out, ["`extensions` shows what kind of data the space is.",
+                           *(["`find` with larger_than lists the biggest files."]
+                             if self.expose_names else [])])
 
     def age_histogram(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
-            return shape.age_histogram(conn, host=self.host,
-                                       root=self._root(conn, root))
+            out = shape.age_histogram(conn, host=self.host,
+                                      root=self._root(conn, root))
+        return _next(out, ["Ages are by last modification, not last use.",
+                           "`suggest` flags stale build output, old installers "
+                           "and caches."])
 
     def extensions(self, root: str | None = None, limit: int = 20) -> dict[str, Any]:
         with self._open() as conn:
-            return shape.extensions(conn, host=self.host, root=self._root(conn, root),
-                                    limit=max(1, min(limit, 200)))
+            out = shape.extensions(conn, host=self.host, root=self._root(conn, root),
+                                   limit=max(1, min(limit, 200)))
+        return _next(out, ["`find` with name='*.<ext>' lists files of one type."]
+                     if self.expose_names else
+                     ["`suggest` turns this into concrete cleanup candidates."])
 
     def duplicates_summary(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
-            return shape.duplicates_summary(conn, host=self.host,
-                                            root=self._root(conn, root))
+            out = shape.duplicates_summary(conn, host=self.host,
+                                           root=self._root(conn, root))
+        cov = out["coverage"]
+        steps = []
+        if cov["files"] and (cov["partial_hashed"] + cov["full_hashed"]) < cov["files"] * 0.9:
+            steps.append("Much of the tree is unhashed, so these totals are low. "
+                         "Suggest `cdm rescan --checksum`.")
+        steps.append("`dupes` lists the groups." if self.expose_names else
+                     "`suggest` says where duplicates are worth acting on.")
+        steps.append("Partial-hash groups are probable; `cdm dupes --verify` in a "
+                     "terminal confirms them before anything is deleted.")
+        return _next(out, steps)
+
+    def suggest(self, root: str | None = None, older_than_days: int = 90,
+                limit: int = 20) -> dict[str, Any]:
+        with self._open() as conn:
+            out = suggest_mod.suggest(
+                conn, host=self.host, root=self._root(conn, root),
+                names=self.expose_names, older_than_days=max(0, older_than_days),
+                limit=max(1, min(limit, 100)))
+        steps = ["Present housekeeping (risk none) first, then safe, then review. "
+                 "Show each command; the user runs it, you do not."]
+        if not self.expose_names:
+            steps.append("Paths are not shared by this server. For them, the user "
+                         "can run `cdm suggest` in a terminal.")
+        return _next(out, steps)
 
     # --- names: only registered with --expose-names --------------------------
 
@@ -155,17 +279,21 @@ class Catalog:
                 modified_before=(query.parse_when(modified_before)
                                  if modified_before else None),
                 order=order, limit=limit + 1)
-        return {"results": [_file_row(r) for r in rows[:limit]],
-                "truncated": len(rows) > limit}
+        return _next({"results": [_file_row(r) for r in rows[:limit]],
+                      "truncated": len(rows) > limit},
+                     ["`stat` shows everything recorded about one result.",
+                      "`du` on a result's directory shows what else is there."])
 
     def du(self, path: str, depth: int = 1, limit: int = 40) -> dict[str, Any]:
         limit = max(1, min(limit, MAX_ROWS))
         with self._open() as conn:
             rows = query.disk_usage(conn, path, depth=max(1, depth),
                                     host=self.host, limit=limit)
-        return {"results": [{"path": r["path"], "files": r["files"],
-                             "bytes": r["bytes"], "size": shape.human(r["bytes"])}
-                            for r in rows]}
+        return _next({"results": [{"path": r["path"], "files": r["files"],
+                                   "bytes": r["bytes"], "size": shape.human(r["bytes"])}
+                                  for r in rows]},
+                     ["Call `du` on the largest result to drill down.",
+                      "`suggest` says which of this is safe to remove."])
 
     def dupes(self, min_size: str = "1", limit: int = 20) -> dict[str, Any]:
         limit = max(1, min(limit, MAX_ROWS))
@@ -173,12 +301,13 @@ class Catalog:
             groups = query.dupe_groups(conn, host=self.host,
                                        min_size=query.parse_size(min_size),
                                        limit=limit)
-        return {"groups": [{
+        return _next({"groups": [{
             "confirmed": g["hash_kind"] == "full",
             "bytes_each": g["size"], "size_each": shape.human(g["size"]),
             "reclaimable_bytes": g["reclaimable"],
             "paths": [m["path"] for m in g["members"]],
-        } for g in groups]}
+        } for g in groups]}, ["Unconfirmed groups are probable, not certain: "
+                              "`cdm dupes --verify` in a terminal confirms them."])
 
     def stat(self, path: str) -> dict[str, Any]:
         with self._open() as conn:

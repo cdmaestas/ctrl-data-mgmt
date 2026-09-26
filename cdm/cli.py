@@ -1,6 +1,6 @@
 """The command line.
 
-Verbs: scan, rescan, roots, forget, find, du, dupes, stat, doctor, mcp.
+Verbs: scan, rescan, roots, forget, find, du, dupes, suggest, stat, doctor, mcp.
 
 Output goes to stdout as plain columns; anything the user did not ask for --
 skip counts, warnings, timings -- goes to stderr, so `cdm find ... | xargs` and
@@ -12,12 +12,14 @@ import argparse
 import functools
 import json
 import os
+import shutil
 import sys
+import textwrap
 import time
 from contextlib import closing
 from pathlib import Path
 
-from . import db, hashing, paths, probe, query, roots
+from . import db, hashing, paths, probe, query, roots, suggest
 from .exclude import Excluder
 from .scan import scan_root
 
@@ -352,6 +354,57 @@ def cmd_du(args, conn) -> int:
     return 0
 
 
+def _days(text: str) -> int:
+    """'90' or '90d' -> 90."""
+    try:
+        days = int(text[:-1] if text.lower().endswith("d") else text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number of days: {text!r}") from None
+    if days < 0:
+        raise argparse.ArgumentTypeError("days cannot be negative")
+    return days
+
+
+@with_index
+def cmd_suggest(args, conn) -> int:
+    root = str(Path(args.root).expanduser().resolve()) if args.root else None
+    result = suggest.suggest(conn, host=paths.this_host(), root=root,
+                             older_than_days=args.older_than, limit=args.limit,
+                             max_items=10 ** 6 if args.all else args.items)
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    found = result["suggestions"]
+    if not found:
+        _err("nothing to suggest. If that is surprising, check `cdm roots` and "
+             "whether the tree was scanned with --checksum.")
+        return 0
+
+    pad = " " * 21
+    for n, s in enumerate(found, 1):
+        print(f"{n:>2}  {s['risk']:<6}  {s['size']:>7}  {s['title']}")
+        print(textwrap.fill(s["detail"], width=max(60, shutil.get_terminal_size().columns),
+                            initial_indent=pad, subsequent_indent=pad))
+        items = s.get("items", [])
+        for item in items:
+            when = f", newest {item['newest'][:10]}" if item.get("newest") else ""
+            print(f"                     {item['size']:>7}  {item['path']}"
+                  f"  ({item['files']:,} files{when})" if item["files"] > 1 else
+                  f"                     {item['size']:>7}  {item['path']}")
+            if item.get("action") and not s["action"]:
+                print(f"                              $ {item['action']}")
+        if s["item_count"] > len(items):
+            print(f"                     ... and {s['item_count'] - len(items)} more "
+                  f"(--all to list every one)")
+        if s["action"]:
+            print(f"                     $ {s['action']}")
+        print()
+    if result["truncated"]:
+        _err(f"showing the top {args.limit}; --limit to see more")
+    _err(result["note"])
+    return 0
+
+
 @with_index
 def cmd_forget(args, conn) -> int:
     host = paths.this_host()
@@ -581,6 +634,18 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("--all-hosts", action="store_true")
     u.add_argument("--json", action="store_true")
     u.set_defaults(func=cmd_du)
+
+    s = sub.add_parser("suggest", help="ranked things worth doing, with the command "
+                                       "for each (changes nothing)")
+    s.add_argument("--root", metavar="PATH",
+                   help="restrict to one root (and roots nested in it)")
+    s.add_argument("--older-than", metavar="DAYS", type=_days, default=90,
+                   help="how long build output must be untouched (default 90d)")
+    s.add_argument("--limit", type=int, default=20, help="suggestions to show")
+    s.add_argument("--items", type=int, default=5, help="paths per suggestion")
+    s.add_argument("--all", action="store_true", help="every path per suggestion")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_suggest)
 
     g = sub.add_parser("forget", help="drop a root and its rows from the index")
     g.add_argument("path")
