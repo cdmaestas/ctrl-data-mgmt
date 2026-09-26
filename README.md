@@ -31,6 +31,52 @@ pipx install ctrl-data-mgmt
 
 `pip install ctrl-data-mgmt` works too, inside a virtualenv.
 
+## Getting started
+
+`cdm guide` shows where you are and what to do next. Each step is checked
+against the index itself, so it is done because the index shows it, not
+because you said so:
+
+```console
+$ cdm guide
+Getting started with cdm: 2 of 3 done
+
+  [x] 1  Index a folder  -- /Users/you/work
+  [x] 2  Hash it for duplicates  -- 100% of files hashed
+  [>] 3  See what's worth doing  -- 1 safe and 4 to review, about 12.4G
+         cdm ranks caches, stale build output, old installers, large git
+         histories, model files and duplicates by size, with a risk and the
+         command for each. It never runs anything.
+         $ cdm suggest
+
+  [~] 4  Clean up, then rescan
+  [ ] 5  Keep it current  -- 1 root(s) not scanned in 7+ days, oldest 12 days
+  [?] 6  Ask questions with an AI client  (optional)
+```
+
+The steps, in order:
+
+1. **Index a folder**: `cdm scan ~/work --checksum`. Nothing is indexed until
+   you name it; your home directory is a fine root, just never a default.
+2. **Hash it**: `--checksum` on the first scan, or `cdm rescan --checksum`
+   later. Unhashed files can't show up as duplicates.
+3. **See what's worth doing**: `cdm suggest` (see below). Start with `safe`.
+4. **Clean up, then rescan**: run the commands you choose, then
+   `cdm rescan --checksum` so the index drops what's gone.
+5. **Keep it current**: `cdm guide --schedule` prints a nightly rescan job for
+   launchd (macOS) or cron to install yourself. On macOS:
+
+   ```bash
+   cdm guide --schedule > ~/Library/LaunchAgents/io.github.ctrl-data-mgmt.rescan.plist
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.ctrl-data-mgmt.rescan.plist
+   ```
+
+6. **Optionally, ask questions with an AI client**: see
+   [the MCP section](#ask-questions-with-an-ai-client-mcp).
+
+`cdm guide --all` explains every step, and `--json` returns the same checklist
+the MCP `guide` tool does.
+
 ## Use
 
 Roots are explicit. There is no default `$HOME` crawl, ever — you say what to
@@ -51,6 +97,7 @@ cdm roots                     # what's watched, and when it was last scanned
 | `cdm du [PATH]` | disk usage by subdirectory, answered from the index |
 | `cdm dupes` | files that look identical |
 | `cdm suggest` | ranked things worth doing, with the command for each |
+| `cdm guide` | where you are and what to do next, step by step |
 | `cdm stat PATH` | everything the index knows about one file |
 | `cdm doctor` | index health, stale hashes, roots that have gone away |
 
@@ -217,9 +264,10 @@ the server answers from the *shape* of your data, not its names:
 | `extensions` | what kind of data is taking the space |
 | `duplicates_summary` | how much looks duplicated, how much is confirmed |
 | `suggest` | what is worth doing, ranked, with risk and command (no paths) |
+| `guide` | the getting-started checklist, with the next step |
 
-To make it easy to start, the server also offers **prompts** — *What's using my
-disk?*, *What can I clean up?*, *How much is duplicated?*, *What changed
+To make it easy to start, the server also offers **prompts** — *Getting
+started* (a step-by-step walk through `guide`), *What's using my disk?*, *What can I clean up?*, *How much is duplicated?*, *What changed
 recently?*, *Is the index up to date?* — which Claude Code lists as slash
 commands. Every tool result carries `next_steps` pointing at the next useful
 tool, and the model is told to show `suggest`'s commands, never run them.
@@ -341,7 +389,8 @@ a tree hashed with nothing recording which half.
   hosts with `pdsh`, and why the index must never live on the shared filesystem.
   Not implemented; recorded so the decisions that keep it cheap survive.
 - **[docs/adr/](docs/adr/)** — decision records: why names are opt-in over MCP
-  (0002), and why suggestions come from one advisory engine (0003).
+  (0002), why suggestions come from one advisory engine (0003), and why the
+  getting-started guide takes its status from the index (0004).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — setup, and the list of choices that
   are deliberate rather than accidental.
 - **[docs/releasing.md](docs/releasing.md)** — how a release happens, and the
