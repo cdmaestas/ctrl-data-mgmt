@@ -98,7 +98,8 @@ Scanning records metadata only. Hashes are opt-in, and there are two, because
 there are two different questions.
 
 **`--checksum` (partial)** answers *are these probably the same file*. It reads
-the first and last 64 KB and mixes in the exact byte count. On a large tree
+the first and last 64 KB (a file of 128 KB or less is read whole) and mixes in
+the exact byte count. On a large tree
 that's the difference between minutes and a weekend, and for finding duplicates
 it's very nearly as good as reading everything.
 
