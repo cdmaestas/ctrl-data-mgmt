@@ -58,6 +58,11 @@ commit. It becomes `0.1.0` when that is tagged.
 
 ### Fixed
 
+- A rescan now removes everything beneath a directory that was deleted, not
+  just the directory itself. Previously the deeper rows stayed in the index
+  forever, so a cleared cache kept showing up in `du`, `suggest` and MCP.
+- A rescan without `--checksum` keeps hashes that still match instead of
+  erasing them, so `cdm rescan` no longer empties `cdm dupes`.
 - Partial hashes of files between 64 KiB and 128 KiB covered only the first
   64 KiB, so same-sized files differing after that were reported as duplicates.
   Files of up to 128 KiB are now hashed whole.
