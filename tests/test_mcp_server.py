@@ -73,6 +73,25 @@ def test_argument_schemas_survive_the_error_wrapper(catalog):
     assert du.input_schema["required"] == ["path"]
 
 
+def test_prompts_are_offered_and_match_the_names_setting(catalog):
+    for expose in (False, True):
+        server = mcp_server.build_server(catalog, expose_names=expose)
+        offered = {p.name: p for p in asyncio.run(server.list_prompts())}
+        assert set(offered) == set(tools.PROMPTS)
+        assert all(p.title for p in offered.values())
+        got = asyncio.run(server.get_prompt("cleanup", {"root": "/r"}))
+        text = got.messages[0].content.text
+        assert "`suggest` with root='/r'" in text
+        assert ("`du`" in text) is expose
+
+
+def test_build_server_decides_what_suggest_may_name(catalog):
+    mcp_server.build_server(catalog, expose_names=True)
+    assert catalog.expose_names is True
+    mcp_server.build_server(catalog, expose_names=False)
+    assert catalog.expose_names is False
+
+
 def test_an_anticipated_error_reaches_the_model_with_its_message(catalog):
     """The SDK hides the text of unexpected exceptions; ours must not be hidden."""
     server = mcp_server.build_server(catalog, expose_names=False)

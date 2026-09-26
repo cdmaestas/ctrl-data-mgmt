@@ -45,6 +45,14 @@ commit. It becomes `0.1.0` when that is tagged.
   the index. By default it exposes only aggregate tools that return no names;
   `--expose-names` adds `find`, `du`, `dupes` and `stat`. Requires the `mcp`
   extra (Python 3.10+); the core stays dependency-free on 3.9.
+- `cdm suggest` and the MCP `suggest` tool: ranked, advisory suggestions
+  (caches, stale dependencies and build output in git checkouts, large git
+  histories, old installers, model files, duplicates, index housekeeping), each
+  with its size, reason, risk and command. Nothing is ever run. See
+  `docs/adr/0003`.
+- MCP prompts (`disk-usage`, `cleanup`, `duplicates`, `recent-changes`,
+  `index-health`) that clients list as ready-made questions, and a `next_steps`
+  field on every tool result pointing at the next useful tool.
 - Man page `cdm(1)`, contributing guide, and version-controlled git hooks.
 - Release workflow: Trusted Publishing, TestPyPI and a smoke test before PyPI.
 

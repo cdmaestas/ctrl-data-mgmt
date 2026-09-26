@@ -73,6 +73,11 @@ any file that cannot be read is reported and excluded from the totals, and the
 command exits non-zero: a verification that could not read a file has not
 verified anything about it.
 .TP
+.BI "suggest " [ options ]
+List what is worth doing, ranked, with the command for each. Changes nothing.
+See
+.BR SUGGESTIONS .
+.TP
 .BI "stat " path
 Print everything the index records about one path, including whether its hash
 has gone stale.
@@ -300,6 +305,57 @@ The cost is that
 walks the overlap once per root.
 .B "cdm scan"
 notes when a new root overlaps an existing one.
+.SH SUGGESTIONS
+.B "cdm suggest"
+reads the index and lists things worth doing: package and application caches,
+dependencies and build output untouched for a while, large git histories, old
+installers and downloaded archives, AI model files, duplicates, and index
+housekeeping. Each comes with its size, the reason, a risk and the command a
+person would run.
+.B cdm
+never runs these commands.
+.PP
+Risk is
+.B none
+for housekeeping (a stale scan, an unhashed root, stale hashes), listed first
+because it decides whether every other answer is right;
+.B safe
+for data that regenerates on its own, such as a package cache; and
+.B review
+for everything else. Staleness is judged by modification time, which is not
+last access: a file read every day but never rewritten looks old. Nothing judged
+by age alone is marked
+.BR safe .
+Dependencies and build output are only suggested inside a git working tree.
+A cache inside another listed cache is not counted twice, but savings can
+overlap between suggestions.
+.TP
+.BI \-\-older\-than " days"
+How long dependencies and build output must be unmodified, as
+.I N
+or
+.IR N d.
+Default 90.
+.TP
+.BI \-\-root " path"
+Only this root and roots nested in it.
+.TP
+.BI \-\-limit " n"
+Show at most
+.I n
+suggestions (default 20).
+.TP
+.BI \-\-items " n"
+Show at most
+.I n
+paths per suggestion (default 5);
+.B \-\-all
+shows every one.
+.TP
+.B \-\-json
+The same data the MCP
+.B suggest
+tool returns.
 .SH MCP SERVER
 .B "cdm mcp"
 lets an MCP client such as Claude Code or Claude Desktop answer plain\-language
@@ -322,14 +378,15 @@ Out of the box the server offers only
 .BR summary ,
 .BR size_histogram ,
 .BR age_histogram ,
-.B extensions
+.BR extensions ,
+.B duplicates_summary
 and
-.BR duplicates_summary :
-totals, histograms and file types, with no file or directory name below a
-root. With a cloud\-hosted model every answer goes to its provider, and
-filenames are often sensitive on their own. Extensions are shown only when
-they look like a file type \(em short, alphanumeric, and shared by at least two
-files \(em so a suffix cannot easily carry part of a name.
+.BR suggest :
+totals, histograms, file types and ranked suggestions, with no file or
+directory name below a root. With a cloud\-hosted model every answer goes to
+its provider, and filenames are often sensitive on their own. Extensions are
+shown only when they look like a file type \(em short, alphanumeric, and shared
+by at least two files \(em so a suffix cannot easily carry part of a name.
 .TP
 .B \-\-expose\-names
 Also offer
@@ -338,8 +395,10 @@ Also offer
 .B dupes
 and
 .BR stat ,
-which return paths. Without this flag those tools are not registered at all,
-so a client cannot call them or learn that they exist.
+which return paths, and let
+.B suggest
+list the paths behind each suggestion. Without this flag those tools are not
+registered at all, so a client cannot call them or learn that they exist.
 .PP
 The server opens the index with SQLite in read\-only mode, so a write is refused
 by SQLite itself. It never walks directories and never reads file contents,
@@ -350,6 +409,22 @@ Keep the index current with
 yourself; the
 .B summary
 tool reports how many days ago each root was scanned.
+.PP
+The server also offers prompts, ready\-made questions a client can list as a
+menu:
+.BR disk\-usage ,
+.BR cleanup ,
+.BR duplicates ,
+.B recent\-changes
+and
+.BR index\-health ,
+each taking an optional
+.IR root .
+Every tool result includes
+.BR next_steps ,
+naming the next useful tool. The model is told to show the commands
+.B suggest
+returns and never to run them.
 .PP
 On start it prints to standard error what it is serving, which tools are live
 and whether names are exposed. Standard output carries only protocol messages.
