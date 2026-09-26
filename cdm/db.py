@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import hashing, paths
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots (
@@ -46,11 +46,18 @@ CREATE TABLE IF NOT EXISTS files (
     hash_size  INTEGER,
     hash_mtime REAL,
     seen_at    TEXT NOT NULL,
+    -- Last access, files only, and only where the filesystem updates it: NULL
+    -- means unknown, never "not accessed". See atime.py and docs/adr/0005.
+    atime      REAL,
+    -- The atime cdm's own read left behind. While the file's atime still
+    -- equals it, nobody else has read the file since, so `atime` stands.
+    self_atime REAL,
     PRIMARY KEY (host, path)
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_size  ON files(size);
 CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
+CREATE INDEX IF NOT EXISTS idx_files_atime ON files(atime);
 CREATE INDEX IF NOT EXISTS idx_files_name  ON files(name);
 CREATE INDEX IF NOT EXISTS idx_files_hash  ON files(hash_kind, hash, size);
 CREATE INDEX IF NOT EXISTS idx_files_root  ON files(host, root);
@@ -158,6 +165,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
             f"cdm: index was written by a newer version (schema {version}, "
             f"this build understands {SCHEMA_VERSION}). Upgrade cdm."
         )
+    # Columns added after schema 3 must exist before SCHEMA runs, because it
+    # indexes them; CREATE TABLE IF NOT EXISTS does not add columns to a table
+    # that is already there.
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(files)")}
+    if existing:
+        for column in ("atime", "self_atime"):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE files ADD COLUMN {column} REAL")
     conn.executescript(SCHEMA)
     if 0 < version < 3:
         # Before schema 3, a partial hash of a file between one and two windows

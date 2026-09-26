@@ -58,8 +58,9 @@ def test_bytes_read_matches_what_partial_hash_reads(tmp_path, monkeypatch, size)
         def seek(self, *a):
             return self.f.seek(*a)
 
-    monkeypatch.setattr(hashing, "open", lambda *a, **k: Counting(real_open(*a, **k)),
-                        raising=False)
+    # hashing opens through atime.open_quietly, so that is what gets counted.
+    monkeypatch.setattr(hashing, "open_quietly",
+                        lambda path: Counting(real_open(path, "rb")))
     hashing.partial_hash(p, size)
     assert total[0] == hashing.bytes_read(size, hashing.PARTIAL)
 

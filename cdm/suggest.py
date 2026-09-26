@@ -9,10 +9,11 @@ on its own -- see docs/adr/0003. Rules that are not negotiable:
 * HONEST ABOUT RISK. Each suggestion says whether its action is `safe` (the
   data regenerates by itself: a package cache), `review` (look first: build
   output, installers, models, duplicates) or `none` (index housekeeping).
-* HONEST ABOUT EVIDENCE. Staleness is measured from mtime, because that is what
-  the index records. mtime says when something was last CHANGED, not last used:
-  a model loaded every day but never rewritten looks cold. Nothing judged by
-  mtime is ever marked `safe` for that reason alone.
+* HONEST ABOUT EVIDENCE. Staleness is the later of last modified and last read,
+  where the filesystem records access times (see atime.py). mtime alone says
+  when something last CHANGED, not last used; atime says when something --
+  possibly Spotlight or a backup -- last READ it. Old on both is good evidence
+  of disuse; neither makes anything `safe` on its own.
 * NAMES FOLLOW THE CALLER. With names=False the output carries no path below a
   root, the same contract as shape.py (docs/adr/0002). Rule labels and commands
   come from the fixed vocabulary in this file, never from the index.
@@ -107,6 +108,9 @@ class Item:
     files: int = 0
     newest: str | None = None
     action: str | None = None
+    # Latest trusted access time below this item, where the filesystem records
+    # one. None means unknown, never "not read".
+    last_read: str | None = None
 
     @property
     def size(self) -> str:
@@ -154,19 +158,24 @@ class _Index:
         return self.conn.execute("SELECT 1 FROM files WHERE host = ? AND path = ?",
                                  (self.host, path)).fetchone() is not None
 
-    def under(self, directory: str) -> tuple[int, int, float | None]:
-        """(files, bytes, newest mtime) below a directory, from the primary key."""
+    def under(self, directory: str):
+        """(files, bytes, newest mtime, newest atime) below a directory."""
         lo, hi = roots_mod.bounds(directory)
         r = self.conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(size), 0), MAX(mtime) FROM files "
+            "SELECT COUNT(*), COALESCE(SUM(size), 0), MAX(mtime), MAX(atime) FROM files "
             "WHERE host = ? AND path >= ? AND path < ? AND type = 'file'",
             (self.host, lo, hi)).fetchone()
-        return r[0], r[1], r[2]
+        return r[0], r[1], r[2], r[3]
 
 
 def _iso(epoch: float | None) -> str | None:
     return None if epoch is None else datetime.fromtimestamp(epoch).isoformat(
         timespec="seconds")
+
+
+def _latest(mtime: float | None, atime: float | None) -> float:
+    """The later of modified and last read; an unknown atime counts for nothing."""
+    return max(mtime or 0.0, atime or 0.0)
 
 
 def _topmost(paths):
@@ -242,7 +251,7 @@ def _cache_rules(idx: _Index, dirs) -> list[Suggestion]:
     groups: dict[tuple, Suggestion] = {}
     for path in sorted(hits, key=len, reverse=True):
         label, command, risk, minimum = hits[path]
-        files, total, newest = idx.under(path)
+        files, total, newest, read = idx.under(path)
         inner = sum(b for p, b in claimed if p.startswith(roots_mod.bounds(path)[0]))
         claimed.append((path, total))
         net = total - inner
@@ -266,7 +275,7 @@ def _cache_rules(idx: _Index, dirs) -> list[Suggestion]:
                 risk, action=None if "{path}" in command else command)
         s.bytes += net
         s.items.append(Item(path, net, files, _iso(newest),
-                            command.format(path=shlex.quote(path))))
+                            command.format(path=shlex.quote(path)), _iso(read)))
     return list(groups.values())
 
 
@@ -301,8 +310,10 @@ def _build_rules(idx: _Index, dirs, now: float, older_than_days: int) -> list[Su
     by_risk: dict[str, Suggestion] = {}
     for path in _topmost(candidates):
         label, command, risk = candidates[path]
-        files, total, newest = idx.under(path)
-        if not total or (newest is not None and newest >= cutoff):
+        files, total, newest, read = idx.under(path)
+        # Stale means neither changed nor read since the cutoff. A project run
+        # daily but never rebuilt has old files and fresh access times.
+        if not total or _latest(newest, read) >= cutoff:
             continue
         s = by_risk.get(risk)
         if s is None:
@@ -310,11 +321,11 @@ def _build_rules(idx: _Index, dirs, now: float, older_than_days: int) -> list[Su
                 "build:rebuildable" if risk == SAFE else "build:output",
                 ("Dependencies you can reinstall" if risk == SAFE else
                  "Build output"),
-                (f"Inside git checkouts, nothing modified in {older_than_days}+ "
+                (f"Inside git checkouts, nothing modified or read in {older_than_days}+ "
                  f"days, and each is recreated by its project's install or build "
                  f"command."
                  if risk == SAFE else
-                 f"Inside git checkouts, nothing modified in {older_than_days}+ "
+                 f"Inside git checkouts, nothing modified or read in {older_than_days}+ "
                  f"days. Usually rebuildable, but may hold a release you meant "
                  f"to keep."),
                 risk)
@@ -322,7 +333,7 @@ def _build_rules(idx: _Index, dirs, now: float, older_than_days: int) -> list[Su
         parent = path.rsplit("/", 1)[0]
         s.items.append(Item(path, total, files, _iso(newest),
                             command.format(path=shlex.quote(path),
-                                           parent=shlex.quote(parent))))
+                                           parent=shlex.quote(parent)), _iso(read)))
     return list(by_risk.values())
 
 
@@ -334,12 +345,12 @@ def _git_rule(idx: _Index, dirs) -> list[Suggestion]:
     for d in dirs:
         if d["name"] != ".git":
             continue
-        files, total, newest = idx.under(d["path"])
+        files, total, newest, read = idx.under(d["path"])
         if total >= MIN_GIT:
             s.bytes += total
             s.items.append(Item(d["path"], total, files, _iso(newest),
                                 f"git -C {shlex.quote(d['parent'])} gc "
-                                f"--aggressive --prune=now"))
+                                f"--aggressive --prune=now", _iso(read)))
     return [s] if s.items else []
 
 
@@ -357,18 +368,19 @@ def _file_rules(idx: _Index, now: float) -> list[Suggestion]:
         f"{INSTALLER_AGE_DAYS}+ days. Usually downloadable again.", REVIEW)
     stores: dict[str, list] = {}
     for r in idx.conn.execute(
-            f"SELECT path, name, parent, size, mtime FROM files "
+            f"SELECT path, name, parent, size, mtime, atime FROM files "
             f"WHERE type = 'file' AND size >= ? AND {idx.scope}",
             [min(MIN_INSTALLER, MIN_MODEL_FILE), *idx.params]):
         ext = _ext(r["name"])
         parts = r["path"].split("/")
-        old = r["mtime"] < now - INSTALLER_AGE_DAYS * DAY
+        old = _latest(r["mtime"], r["atime"]) < now - INSTALLER_AGE_DAYS * DAY
         if r["size"] >= MIN_INSTALLER and old and (
                 ext in INSTALLER_EXT
                 or (ext in ARCHIVE_EXT and DOWNLOAD_DIRS & set(parts[:-1]))):
             installers.bytes += r["size"]
             installers.items.append(Item(r["path"], r["size"], 1, _iso(r["mtime"]),
-                                         f"rm {shlex.quote(r['path'])}"))
+                                         f"rm {shlex.quote(r['path'])}",
+                                         _iso(r["atime"])))
             continue
         if r["size"] >= MIN_MODEL_FILE and (ext in MODEL_EXT
                                             or MODEL_DIRS & set(parts[:-1])):
@@ -379,10 +391,12 @@ def _file_rules(idx: _Index, now: float) -> list[Suggestion]:
                 if parts[i] == "models":
                     store = "/".join(parts[:i + 1])
                     break
-            entry = stores.setdefault(store, [0, 0, 0.0])
+            entry = stores.setdefault(store, [0, 0, 0.0, None])
             entry[0] += r["size"]
             entry[1] += 1
             entry[2] = max(entry[2], r["mtime"])
+            if r["atime"] is not None:
+                entry[3] = max(entry[3] or 0.0, r["atime"])
 
     out = []
     if installers.items:
@@ -391,13 +405,15 @@ def _file_rules(idx: _Index, now: float) -> list[Suggestion]:
     if stores:
         models = Suggestion(
             "files:models", "AI model files",
-            "Large model weights, grouped by where they are stored. Dates are "
-            "last MODIFIED, not last used: a model you run daily looks just as "
-            "old. Remove models with the tool that downloaded them.", REVIEW,
+            "Large model weights, grouped by where they are stored, with when "
+            "each store was last modified and, where the filesystem records it, "
+            "last read. A model you run is read when it loads, so an old last "
+            "read is a good sign it is unused. Remove models with the tool that "
+            "downloaded them.", REVIEW,
             action="e.g. `ollama list` then `ollama rm <model>`")
-        for store, (total, n, newest) in stores.items():
+        for store, (total, n, newest, read) in stores.items():
             models.bytes += total
-            models.items.append(Item(store, total, n, _iso(newest)))
+            models.items.append(Item(store, total, n, _iso(newest), last_read=_iso(read)))
         models.items.sort(key=lambda i: i.bytes, reverse=True)
         out.append(models)
     return out
@@ -453,8 +469,10 @@ def suggest(conn, *, host: str, root: str | None = None, names: bool = True,
     return {
         "suggestions": [s.render(names, max_items) for s in found[:max(1, limit)]],
         "truncated": len(found) > limit,
-        "measured_from": "mtime",
+        "measured_from": "mtime and atime",
         "note": ("Advisory only: nothing has been changed. Savings can overlap "
                  "between suggestions (a duplicate inside a cache is counted in "
-                 "both). 'Not modified' is judged by mtime, not last access."),
+                 "both). Age is the later of last modified and last read; last "
+                 "read is recorded only where the filesystem keeps access times, "
+                 "and may be a backup or indexer rather than a person."),
     }
