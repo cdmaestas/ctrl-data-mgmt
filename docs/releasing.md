@@ -69,6 +69,6 @@ That runs verify → TestPyPI → smoke test → *(approval)* → PyPI → GitHu
 Once the project exists on PyPI, the pending publisher becomes a normal one —
 nothing to change. Bump the version, tag, push.
 
-The man page ships to `share/man/man1`, which lands inside the virtualenv on a
-`pipx` install rather than on the system `MANPATH`. That is a packaging fact,
-not a bug; `man ./man/cdm.1` works from a checkout.
+The man page ships to `share/man/man1`. pipx links it into `~/.local/share/man`,
+so `man cdm` works after a pipx install; a plain virtualenv install leaves it
+inside the venv, and `man ./man/cdm.1` always works from a checkout.
