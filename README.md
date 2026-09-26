@@ -128,6 +128,50 @@ This matters more than it sounds. Without it, running `cdm rescan` while a
 network share happens to be unmounted deletes every row for that root and
 cheerfully reports the files as "no longer on disk."
 
+## Ask questions with an AI client (MCP)
+
+`cdm mcp` serves the index to an MCP client such as Claude Code or Claude
+Desktop, so you can ask *"what's eating the disk under ~/work, and how much of it
+hasn't been touched in a year?"* and get an answer from the index.
+
+It needs Python 3.10+ and the optional SDK, which the core deliberately doesn't
+carry:
+
+```bash
+pipx inject ctrl-data-mgmt mcp
+claude mcp add --scope user cdm -- cdm mcp
+```
+
+For Claude Desktop, add this to `~/Library/Application Support/Claude/claude_desktop_config.json`
+on macOS. Use the absolute path from `which cdm`, because Desktop doesn't
+inherit your shell's `PATH`:
+
+```json
+{"mcpServers": {"cdm": {"command": "/Users/you/.local/bin/cdm", "args": ["mcp"]}}}
+```
+
+**Names are not exposed by default.** With a cloud-hosted model, everything a
+tool returns goes to its provider, and filenames are often sensitive on their
+own: codenames, people's names, case numbers baked into paths. So out of the box
+the server answers from the *shape* of your data, not its names:
+
+| tool | answers |
+|---|---|
+| `summary` | per-root files, bytes, and days since last scan |
+| `size_histogram` | is the space in a few huge files or many small ones |
+| `age_histogram` | how much of this is cold |
+| `extensions` | what kind of data is taking the space |
+| `duplicates_summary` | how much looks duplicated, how much is confirmed |
+
+Start it with `--expose-names` to add `find`, `du`, `dupes` and `stat`, which
+return paths. Without the flag those tools aren't filtered, they're **not
+registered at all**, so a client can't call them or even learn they exist.
+
+The server is read-only in the strong sense: it opens the index with SQLite's
+read-only mode, so a write is refused by SQLite itself. It never walks
+directories or reads file contents. Keep the index fresh with `cdm rescan`;
+`summary` tells the model how stale each root is.
+
 ## On macOS
 
 Fully supported — CI runs the suite on macOS, and the performance numbers above
@@ -214,9 +258,9 @@ a tree hashed with nothing recording which half.
 
 ## Not in this version
 
-- **No natural language.** The flag-driven CLI comes first on purpose: it's the
-  substrate an NL layer would compile into, and using it daily is what produces
-  the log of real questions needed to evaluate one honestly.
+- **No built-in natural language.** Plain-language questions come through an
+  MCP client instead (see below), which compiles them into the same query layer
+  the CLI uses. Nothing ships a model.
 - **No remote scans.** Multi-host fan-out is the reason `host` exists, not
   something v1 does.
 

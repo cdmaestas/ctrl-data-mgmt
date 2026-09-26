@@ -71,6 +71,11 @@ verified anything about it.
 Print everything the index records about one path, including whether its hash
 has gone stale.
 .TP
+.B mcp
+Serve the index to an AI client over the Model Context Protocol, on standard
+input and output. Read\-only. See
+.BR "MCP SERVER" .
+.TP
 .B doctor
 Report index location, permissions, entry and hash counts, stale hashes, and
 roots that have disappeared from disk. Exits non-zero if the index, its
@@ -253,6 +258,67 @@ would leave part of the tree hashed and part not, with nothing recording which
 part.
 .PP
 Checkpoints are deleted when a scan completes.
+.SH MCP SERVER
+.B "cdm mcp"
+lets an MCP client such as Claude Code or Claude Desktop answer plain\-language
+questions about the index. It needs Python 3.10 or newer and the optional SDK:
+.PP
+.RS
+.EX
+pipx inject ctrl\-data\-mgmt mcp
+.EE
+.RE
+.PP
+Without either,
+.B "cdm mcp"
+says so and exits 2. The rest of
+.B cdm
+is unaffected and still runs on Python 3.9 with no dependencies.
+.PP
+.B Names are not exposed by default.
+Out of the box the server offers only
+.BR summary ,
+.BR size_histogram ,
+.BR age_histogram ,
+.B extensions
+and
+.BR duplicates_summary :
+totals, histograms and file types, with no file or directory name below a
+root. With a cloud\-hosted model every answer goes to its provider, and
+filenames are often sensitive on their own. Extensions are shown only when
+they look like a file type \(em short, alphanumeric, and shared by at least two
+files \(em so a suffix cannot easily carry part of a name.
+.TP
+.B \-\-expose\-names
+Also offer
+.BR find ,
+.BR du ,
+.B dupes
+and
+.BR stat ,
+which return paths. Without this flag those tools are not registered at all,
+so a client cannot call them or learn that they exist.
+.PP
+The server opens the index with SQLite in read\-only mode, so a write is refused
+by SQLite itself. It never walks directories and never reads file contents,
+which is why there is no scan tool and no equivalent of
+.BR "dupes \-\-verify" .
+Keep the index current with
+.B "cdm rescan"
+yourself; the
+.B summary
+tool reports how many days ago each root was scanned.
+.PP
+On start it prints to standard error what it is serving, which tools are live
+and whether names are exposed. Standard output carries only protocol messages.
+.PP
+To use it from Claude Code:
+.PP
+.RS
+.EX
+claude mcp add \-\-scope user cdm \-\- cdm mcp
+.EE
+.RE
 .SH UNREADABLE PATHS
 A scan concludes that a file is gone by not having seen it. That inference is
 only drawn for directories it could actually read.
@@ -341,13 +407,18 @@ index to
 .BR doctor ,
 files that could not be read to
 .BR "dupes \-\-verify" ,
-or a root that could not be opened to
+a root that could not be opened to
 .B scan
 or
-.BR rescan .
+.BR rescan ,
+or a missing or out\-of\-date index to
+.BR mcp .
 .TP
 .B 2
 Usage error: an unparseable size or time, or a path that is not a directory.
+Also
+.B mcp
+when the MCP SDK is not installed or Python is older than 3.10.
 .TP
 .B 3
 .B rescan

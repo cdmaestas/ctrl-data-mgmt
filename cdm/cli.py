@@ -1,6 +1,6 @@
 """The command line.
 
-Verbs: scan, rescan, roots, forget, find, du, dupes, stat, doctor.
+Verbs: scan, rescan, roots, forget, find, du, dupes, stat, doctor, mcp.
 
 Output goes to stdout as plain columns; anything the user did not ask for --
 skip counts, warnings, timings -- goes to stderr, so `cdm find ... | xargs` and
@@ -390,6 +390,46 @@ def cmd_doctor(args) -> int:
     return rc
 
 
+MCP_INSTALL_HINT = (
+    "cdm mcp needs the optional MCP SDK. Add it with one of:\n"
+    "  pipx inject ctrl-data-mgmt mcp\n"
+    "  pip install 'ctrl-data-mgmt[mcp]'")
+
+
+def _load_mcp_server():
+    """Import the MCP adapter, which only exists with the [mcp] extra installed.
+
+    Only an ImportError for the SDK itself means "extra not installed". Any other
+    ImportError is a real bug and is re-raised rather than disguised as a
+    missing dependency.
+    """
+    try:
+        from . import mcp_server
+    except ImportError as exc:
+        if (exc.name or "").split(".")[0] == "mcp":
+            return None
+        raise
+    return mcp_server
+
+
+def cmd_mcp(args) -> int:
+    # Nothing in this path may print to stdout: over stdio, stdout is the
+    # protocol channel, and one stray line corrupts it for the client.
+    if sys.version_info < (3, 10):
+        _err(f"cdm mcp needs Python 3.10 or newer (the MCP SDK's minimum); "
+             f"this is {sys.version.split()[0]}. The rest of cdm works on 3.9.")
+        return 2
+    server = _load_mcp_server()
+    if server is None:
+        _err(MCP_INSTALL_HINT)
+        return 2
+    try:
+        return server.serve(expose_names=args.expose_names)
+    except db.IndexUnavailable as exc:
+        _err(f"cdm mcp: {exc}")
+        return 1
+
+
 def _threads_for(args, root: Path) -> int:
     """Explicit --threads wins; otherwise measure the filesystem and decide."""
     if args.threads:
@@ -487,6 +527,16 @@ def build_parser() -> argparse.ArgumentParser:
     t.set_defaults(func=cmd_stat)
 
     sub.add_parser("doctor", help="index health").set_defaults(func=cmd_doctor)
+
+    m = sub.add_parser(
+        "mcp", help="serve the index to an AI client over MCP (read-only, stdio)",
+        description="Serve the index to an MCP client such as Claude Code or Claude "
+                    "Desktop. Read-only. By default only totals, histograms and "
+                    "extensions are available -- no file or directory names.")
+    m.add_argument("--expose-names", action="store_true",
+                   help="also offer find, du, dupes and stat, which return paths; "
+                        "those paths are sent to the model client")
+    m.set_defaults(func=cmd_mcp)
     return p
 
 

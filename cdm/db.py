@@ -117,6 +117,40 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+class IndexUnavailable(Exception):
+    """The index cannot be served as-is: missing, or on a different schema."""
+
+
+def connect_readonly(path: Path | None = None) -> sqlite3.Connection:
+    """Open an EXISTING index so that writing through the connection is impossible.
+
+    For front-ends. `mode=ro` makes SQLite itself refuse writes, which is a
+    stronger guarantee than a front-end that merely has no code path that
+    writes. It also cannot create the file or migrate the schema, so both are
+    checked here and reported rather than half-working.
+
+    The URI comes from Path.as_uri(), which percent-encodes; a hand-built
+    "file:" + path would break on a directory with a space or a '%' in it.
+    """
+    db = Path(path) if path else paths.index_path()
+    if not db.exists():
+        raise IndexUnavailable(f"no index at {db}; run `cdm scan <path>` first")
+
+    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version != SCHEMA_VERSION:
+        conn.close()
+        if version > SCHEMA_VERSION:
+            raise IndexUnavailable(
+                f"index schema {version} is newer than this build understands "
+                f"({SCHEMA_VERSION}); upgrade cdm")
+        raise IndexUnavailable(
+            f"index schema {version} needs upgrading to {SCHEMA_VERSION}, which a "
+            f"read-only connection cannot do; run `cdm doctor` once to upgrade it")
+    return conn
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version > SCHEMA_VERSION:
