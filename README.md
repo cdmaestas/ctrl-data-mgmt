@@ -98,8 +98,8 @@ cdm roots                     # what's watched, and when it was last scanned
 | `cdm dupes` | files that look identical |
 | `cdm suggest` | ranked things worth doing, with the command for each |
 | `cdm guide` | where you are and what to do next, step by step |
-| `cdm stat PATH` | everything the index knows about one file |
-| `cdm doctor` | index health, stale hashes, roots that have gone away |
+| `cdm stat PATH` | everything the index knows about one file, including last access where trusted |
+| `cdm doctor` | index health, stale hashes, access-time coverage, roots that have gone away |
 
 `du` answers from the index rather than the filesystem, so it returns instantly
 on a tree that real `du` would spend minutes walking:
@@ -115,6 +115,7 @@ cdm du ~/work --depth 2    # two levels
 cdm find --name '*.csv' --larger-than 10M --order mtime
 cdm find --iname '*.pdf'            # case-insensitive; see the macOS note below
 cdm find --modified-after 7d --type file --quiet | xargs wc -l
+cdm find --accessed-before 180d --larger-than 1G   # big and not read in 6 months
 cdm find --root ~/work --json
 ```
 
@@ -163,9 +164,10 @@ unhashed root), **safe** regenerates on its own (package caches), and **review**
 means look first (build output, old installers, model files, large git
 histories, duplicates, app caches). The rules are conservative on purpose:
 
-- "Not modified" is judged by **mtime**, because that is what the index records.
-  It is not last access — a model you load daily looks just as old — so nothing
-  judged by age alone is ever called safe.
+- Age is the later of **last modified** and **last read**, where the
+  filesystem keeps trustworthy access times (see below). A recent read may be
+  Spotlight or a backup rather than you, so nothing judged by age alone is ever
+  called safe.
 - Dependencies and build output count only **inside a git checkout**, where
   "rebuild it" is actually true.
 - A cache inside another listed cache is never counted twice, but savings can
@@ -173,6 +175,30 @@ histories, duplicates, app caches). The rules are conservative on purpose:
 
 `--older-than 30d` changes the staleness threshold, `--root` narrows to one root,
 `--all` lists every path, and `--json` gives the same data the MCP tool returns.
+
+## Last access time
+
+cdm records when each file was last read — but only where that date means
+something, and never counting its own reads:
+
+- **Only where reads update it.** A `noatime` or read-only mount never does.
+  And measured on macOS APFS, a read moves the access time only on the *first*
+  read after a file changes, so a model you load daily keeps the date of its
+  first load. cdm measures this with a scratch file in its own data directory
+  and, where the answer isn't "every read counts, within a day" (Linux
+  `relatime` or better), records the access time as **unknown** rather than a
+  misleading date. `cdm doctor` shows how many files have a trusted one.
+- **Never polluted by cdm.** Hashing opens files with `O_NOATIME` on Linux.
+  Elsewhere, cdm notes the access time its own read left behind and keeps the
+  earlier one until someone else reads the file; `dupes --verify` does the
+  same. Reads by scans from before this was recorded are treated as unknown.
+- **Files only.** Listing a directory updates its access time, and cdm lists
+  every directory it scans.
+
+Where it is recorded, `stat` shows it, `find --accessed-before/--accessed-after`
+filters on it (an unknown never matches), the MCP `age_histogram` takes
+`by='atime'`, and `suggest` treats something read recently as in use. See
+[ADR 0005](docs/adr/0005-access-time-is-recorded-only-where-it-means-last-read.md).
 
 ## Hashing: two kinds, never confused
 
@@ -260,7 +286,7 @@ the server answers from the *shape* of your data, not its names:
 |---|---|
 | `summary` | per-root files, bytes, and days since last scan |
 | `size_histogram` | is the space in a few huge files or many small ones |
-| `age_histogram` | how much of this is cold |
+| `age_histogram` | how much of this is cold, by last modified or (`by='atime'`) last read |
 | `extensions` | what kind of data is taking the space |
 | `duplicates_summary` | how much looks duplicated, how much is confirmed |
 | `suggest` | what is worth doing, ranked, with risk and command (no paths) |
@@ -390,7 +416,8 @@ a tree hashed with nothing recording which half.
   Not implemented; recorded so the decisions that keep it cheap survive.
 - **[docs/adr/](docs/adr/)** — decision records: why names are opt-in over MCP
   (0002), why suggestions come from one advisory engine (0003), and why the
-  getting-started guide takes its status from the index (0004).
+  getting-started guide takes its status from the index (0004), and when an
+  access time is trusted (0005).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — setup, and the list of choices that
   are deliberate rather than accidental.
 - **[docs/releasing.md](docs/releasing.md)** — how a release happens, and the

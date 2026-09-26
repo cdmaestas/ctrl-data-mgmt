@@ -19,6 +19,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from .atime import open_quietly
+
 WINDOW = 64 * 1024  # bytes read from each end for a partial hash
 CHUNK = 1024 * 1024
 
@@ -38,7 +40,7 @@ def partial_hash(path: Path, size: int) -> str:
     h = hashlib.blake2b(digest_size=16)
     h.update(b"cdm-partial-v1\0")
     h.update(str(size).encode("ascii"))
-    with open(path, "rb") as f:
+    with open_quietly(path) as f:
         if size <= 2 * WINDOW:
             h.update(f.read(2 * WINDOW))
         else:
@@ -52,7 +54,7 @@ def full_hash(path: Path) -> str:
     """Hash of every byte."""
     h = hashlib.blake2b(digest_size=16)
     h.update(b"cdm-full-v1\0")
-    with open(path, "rb") as f:
+    with open_quietly(path) as f:
         while True:
             block = f.read(CHUNK)
             if not block:

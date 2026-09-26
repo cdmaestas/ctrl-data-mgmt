@@ -72,6 +72,23 @@ Change these only deliberately, and update the man page when you do:
 - **MCP tools that return names are registered only with `--expose-names`.**
   Not filtered — absent. Shape tools take no path arguments, and a test asserts
   that. See [docs/adr/0002](docs/adr/0002-mcp-exposes-shape-not-names-by-default.md).
+- **The index's own files are never opened by a scan.** Closing any descriptor
+  to a file drops every POSIX lock the process holds on it, SQLite's included;
+  hashing `index.db-shm` mid-scan let another process delete the WAL under the
+  writer (a SIGBUS). `tests/test_scan.py` reproduces it across two processes.
+- **A vanished directory takes its whole subtree with it**, swept as orphans so
+  indexes left inconsistent by older builds are repaired too, and never below a
+  directory that could not be read.
+- **Suggestions and the guide are advisory, and come from one engine each**
+  (`suggest.py`, `guide.py`) that every front-end renders. Nothing runs a
+  command for the user. A guide step is `done` only because the index shows it.
+  See [docs/adr/0003](docs/adr/0003-suggestions-come-from-one-advisory-engine.md)
+  and [docs/adr/0004](docs/adr/0004-guidance-is-a-checklist-whose-status-comes-from-the-index.md).
+- **An access time is recorded only where it means "last read", and cdm's own
+  reads never count.** Unknown is NULL, never a guessed date. The tests simulate
+  a filesystem where reads move atime; without that they pass trivially on one
+  where they do not (macOS, or Linux with `O_NOATIME`). See
+  [docs/adr/0005](docs/adr/0005-access-time-is-recorded-only-where-it-means-last-read.md).
 - **All MCP behaviour lives in `cdm/tools.py`, which is stdlib-only.**
   `cdm/mcp_server.py` only registers it with the SDK. That split is what lets
   the Python 3.9 CI job test the tools without the SDK, which needs 3.10+.

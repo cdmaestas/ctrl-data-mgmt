@@ -61,3 +61,7 @@ wants to *act* on a suggestion — a UI "clean up" button — needs its own
 decision record first: this one does not grant it. Rules that would need data
 the index does not have (last access time, which process owns a cache) wait
 until the index records it.
+
+*Update:* the index now records last access time where it is trustworthy, and
+the rules use it; see ADR 0005. Nothing here changes: an access time alone
+still never makes a suggestion `safe`.

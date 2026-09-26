@@ -136,31 +136,45 @@ def size_histogram(conn, *, host: str | None = None, root: str | None = None) ->
 
 
 def age_histogram(conn, *, host: str | None = None, root: str | None = None,
-                  now: float | None = None) -> dict:
-    """File counts and bytes by time since last modification.
+                  now: float | None = None, by: str = "mtime") -> dict:
+    """File counts and bytes by time since last modification, or last access.
 
-    Files whose mtime is in the future (clock skew, a restored archive) get
-    their own bucket rather than being quietly counted as "recent".
+    Files whose time is in the future (clock skew, a restored archive) get
+    their own bucket rather than being quietly counted as "recent". By atime,
+    only files with a trusted access time are bucketed; the rest are counted in
+    `without_atime`, never folded into "old".
     """
+    if by not in ("mtime", "atime"):
+        raise ValueError("by must be mtime or atime")
     now = time.time() if now is None else now
     where, params = _scope(host, root)
-    whens = [f"WHEN mtime > {now!r} THEN -1"]
+    col = by
+    whens = [f"WHEN {col} > {now!r} THEN -1"]
     for i, (_, span) in enumerate(AGE_BUCKETS):
         if span is not None:
-            whens.append(f"WHEN mtime >= {now - span!r} THEN {i}")
+            whens.append(f"WHEN {col} >= {now - span!r} THEN {i}")
     rows = {r[0]: (r[1], r[2]) for r in conn.execute(
         f"SELECT CASE {' '.join(whens)} ELSE {len(AGE_BUCKETS) - 1} END AS b, "
         f"COUNT(*), COALESCE(SUM(size), 0) FROM files "
-        f"WHERE type = 'file' AND {where} GROUP BY b", params)}
+        f"WHERE type = 'file' AND {col} IS NOT NULL AND {where} GROUP BY b", params)}
     buckets = []
     for i, (label, _) in enumerate(AGE_BUCKETS):
         n, b = rows.get(i, (0, 0))
         buckets.append({"bucket": label, "files": n, "bytes": b, "size": human(b)})
     n, b = rows.get(-1, (0, 0))
     buckets.append({"bucket": FUTURE, "files": n, "bytes": b, "size": human(b)})
-    return {"buckets": buckets, "measured_from": "mtime",
-            "total_files": sum(x["files"] for x in buckets),
-            "total_bytes": sum(x["bytes"] for x in buckets)}
+    out = {"buckets": buckets, "measured_from": by,
+           "total_files": sum(x["files"] for x in buckets),
+           "total_bytes": sum(x["bytes"] for x in buckets)}
+    if by == "atime":
+        n, b = conn.execute(
+            f"SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files "
+            f"WHERE type = 'file' AND atime IS NULL AND {where}", params).fetchone()
+        out["without_atime"] = {"files": n, "bytes": b, "size": human(b),
+                                "why": "the filesystem does not update access "
+                                       "times, or the file has not been read since "
+                                       "cdm hashed it"}
+    return out
 
 
 def extension_of(name: str) -> str:

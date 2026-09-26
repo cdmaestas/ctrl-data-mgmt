@@ -46,7 +46,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import hashing
+from . import atime as atime_mod
+from . import hashing, paths
 from . import roots as roots_mod
 from .exclude import Excluder
 
@@ -59,14 +60,16 @@ COMMIT_EVERY_ROWS = 5000
 
 _INSERT = (
     "INSERT INTO files (host, root, path, parent, name, size, mtime, ctime, "
-    "                   inode, type, hash, hash_kind, hash_size, hash_mtime, seen_at) "
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+    "                   inode, type, hash, hash_kind, hash_size, hash_mtime, seen_at, "
+    "                   atime, self_atime) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
     "ON CONFLICT(host, path) DO UPDATE SET "
     "  root=excluded.root, parent=excluded.parent, name=excluded.name, "
     "  size=excluded.size, mtime=excluded.mtime, ctime=excluded.ctime, "
     "  inode=excluded.inode, type=excluded.type, hash=excluded.hash, "
     "  hash_kind=excluded.hash_kind, hash_size=excluded.hash_size, "
-    "  hash_mtime=excluded.hash_mtime, seen_at=excluded.seen_at"
+    "  hash_mtime=excluded.hash_mtime, seen_at=excluded.seen_at, "
+    "  atime=excluded.atime, self_atime=excluded.self_atime"
 )
 
 
@@ -155,6 +158,26 @@ def _index_files(conn) -> frozenset[str]:
     return frozenset(names)
 
 
+def _hash_windows(conn, host: str) -> list[tuple[float, float]]:
+    """When earlier hashing scans ran, as (start, end) epochs with slack.
+
+    A scan that never finished (killed, or crashed) is given an hour.
+    """
+    windows = []
+    for started, finished in conn.execute(
+            "SELECT started_at, finished_at FROM scans "
+            "WHERE host = ? AND hash_kind IS NOT NULL", (host,)):
+        start = datetime.fromisoformat(started).timestamp()
+        end = (datetime.fromisoformat(finished).timestamp() if finished
+               else start + 3600)
+        windows.append((start - 1, end + 1))
+    return windows
+
+
+def _during(t: float, windows: list[tuple[float, float]]) -> bool:
+    return any(lo <= t <= hi for lo, hi in windows)
+
+
 def _topmost(paths) -> list[str]:
     """Drop every path that lies below another path in the set."""
     kept: list[str] = []
@@ -229,11 +252,14 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
     lo, hi = roots_mod.bounds(root_key)
     known = {
         r["path"]: r for r in conn.execute(
-            "SELECT path, size, mtime, hash, hash_kind, hash_size, hash_mtime "
+            "SELECT path, size, mtime, hash, hash_kind, hash_size, hash_mtime, "
+            "       atime, self_atime "
             "FROM files WHERE host = ? AND path >= ? AND path < ?", (host, lo, hi))
     }
     inner = roots_mod.nested(conn, host, root_key)
     owners = [root_key, *inner]
+    trust = atime_mod.Trust(measured=atime_mod.probe(paths.data_dir()))
+    hash_windows = _hash_windows(conn, host)
 
     # Pre-computed in the main thread: walkers must never touch the connection.
     resumed_children = _resumed_children(conn, host, owners, stamp, completed)
@@ -259,9 +285,13 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
                 work.put(None)
 
     def hash_for(path: Path, st, kind: str):
-        """Returns (digest, kind, size, mtime) or Nones."""
+        """Returns (digest, kind, size, mtime, read_it) -- Nones and False if no hash.
+
+        `read_it` is True only when this call opened the file, which is what
+        access-time bookkeeping needs to know.
+        """
         if kind != "file":
-            return None, None, None, None
+            return None, None, None, None, False
         size = st.st_size
         prior = known.get(str(path))
         # A stat-only scan keeps a hash that still matches, whatever its kind:
@@ -274,24 +304,58 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
             with lock:
                 stats.reused_hashes += 1
             return (prior["hash"], prior["hash_kind"], prior["hash_size"],
-                    prior["hash_mtime"])
+                    prior["hash_mtime"], False)
         if hash_kind is None:
-            return None, None, None, None
+            return None, None, None, None, False
         if max_hash_bytes is not None and size > max_hash_bytes:
-            return None, None, None, None
+            return None, None, None, None, False
         # Indexed, but never opened: see "The index's own files" above.
         if str(path) in own_files:
-            return None, None, None, None
+            return None, None, None, None, False
         try:
             digest = hashing.compute(path, size, hash_kind)
         except OSError:
             with lock:
                 stats.unreadable.append(str(path))
-            return None, None, None, None
+            return None, None, None, None, False
         with lock:
             stats.hashed += 1
             stats.hashed_bytes += hashing.bytes_read(size, hash_kind)
-        return digest, hash_kind, size, st.st_mtime
+        return digest, hash_kind, size, st.st_mtime, True
+
+    def atime_for(path: Path, st, kind: str, read_it: bool):
+        """(atime, self_atime) to record: see atime.py and docs/adr/0005.
+
+        cdm's own reads must not count as use. After cdm reads a file its
+        resulting atime is kept as self_atime; while the file's atime still
+        equals that, nobody else has read it, and the earlier atime stands.
+        """
+        if kind != "file":
+            return None, None
+        trusted, _ = trust.check(str(path), st.st_dev)
+        if not trusted:
+            return None, None
+        current = st.st_atime
+        prior = known.get(str(path))
+        if prior is not None and prior["self_atime"] is not None \
+                and current == prior["self_atime"]:
+            recorded, own = prior["atime"], prior["self_atime"]
+        elif (prior is not None and prior["atime"] is None
+              and prior["self_atime"] is None and prior["hash"] is not None
+              and _during(current, hash_windows)):
+            # First look since cdm started recording atime, at a file an
+            # earlier cdm scan read to hash it -- and the atime falls inside
+            # that scan. It is most likely cdm's own read, so it is unknown,
+            # not "read just now". A real read later replaces it.
+            recorded, own = None, current
+        else:
+            recorded, own = current, None
+        if read_it:
+            try:
+                own = os.stat(path).st_atime
+            except OSError:
+                pass
+        return recorded, own
 
     def walk_one(directory: Path):
         """Enumerate one directory. Returns (rows, subdirectories, readable).
@@ -340,10 +404,11 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
                 kind = "file"
                 local["files"] += 1
 
-            digest, dkind, dsize, dmtime = hash_for(path, st, kind)
+            digest, dkind, dsize, dmtime, read_it = hash_for(path, st, kind)
+            atime, self_atime = atime_for(path, st, kind, read_it)
             rows.append((host, owner, str(path), str(path.parent), path.name,
                          st.st_size, st.st_mtime, st.st_ctime, st.st_ino, kind,
-                         digest, dkind, dsize, dmtime, stamp))
+                         digest, dkind, dsize, dmtime, stamp, atime, self_atime))
 
         with lock:
             stats.files += local["files"]
