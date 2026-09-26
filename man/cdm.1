@@ -118,6 +118,18 @@ Match the filename. Uses SQL
 .B GLOB
 semantics: shell wildcards, case sensitive.
 .TP
+.BI \-\-iname " glob"
+Like
+.B \-\-name
+but case\-insensitive. This is usually what you want on macOS and Windows, whose
+filesystems treat
+.I Report.TXT
+and
+.I report.txt
+as the same name while SQL
+.B GLOB
+does not.
+.TP
 .BI \-\-type " {file|dir|link}"
 Restrict to one entry type.
 .TP
@@ -241,6 +253,21 @@ would leave part of the tree hashed and part not, with nothing recording which
 part.
 .PP
 Checkpoints are deleted when a scan completes.
+.SH UNREADABLE PATHS
+A scan concludes that a file is gone by not having seen it. That inference is
+only drawn for directories it could actually read.
+.PP
+If a directory cannot be opened \(em permissions, an unmounted filesystem, or a
+path that needs Full Disk Access on macOS \(em then nothing beneath it is
+removed from the index, and its previously recorded entries are kept untouched.
+Absence is observed, never assumed.
+.PP
+If the root itself cannot be opened, the scan indexes nothing, removes nothing,
+leaves the root's last\-scan time alone, and exits non\-zero. It is reported as
+a failure rather than as an empty directory, because the two look identical
+from the outside and only one of them is true.
+.PP
+Unreadable paths are always counted and reported.
 .SH EXCLUSIONS
 By default
 .B cdm
@@ -312,8 +339,12 @@ an unscanned path to
 a missing index, a vanished root, or permissions that let other users read the
 index to
 .BR doctor ,
-or files that could not be read to
-.BR "dupes \-\-verify" .
+files that could not be read to
+.BR "dupes \-\-verify" ,
+or a root that could not be opened to
+.B scan
+or
+.BR rescan .
 .TP
 .B 2
 Usage error: an unparseable size or time, or a path that is not a directory.
@@ -379,6 +410,16 @@ The
 .B host
 column is recorded but only ever populated with the local host. Remote scanning
 is not implemented.
+.PP
+On macOS, parts of a home directory \(em
+.IR ~/Library/Mail ,
+.IR ~/Library/Messages ,
+Safari data, the Photos library \(em are protected by the system's privacy
+controls and cannot be read without granting Full Disk Access to the terminal
+running
+.BR cdm .
+Without it those paths are reported as unreadable and skipped, which is
+correct but means the index is incomplete for them.
 .SH SEE ALSO
 .BR du (1),
 .BR find (1),

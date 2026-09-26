@@ -42,19 +42,24 @@ def parse_when(text: str, *, now: float | None = None) -> float:
         ) from exc
 
 
-def find(conn, *, host=None, root=None, name=None, kind=None, larger_than=None,
-         smaller_than=None, modified_after=None, modified_before=None,
-         order="size", limit=100):
+def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
+         larger_than=None, smaller_than=None, modified_after=None,
+         modified_before=None, order="size", limit=100):
     # Every filter is one optional AND-ed clause over one column. Keeping them
     # in a table rather than a run of ifs is what makes the set easy to extend
     # -- and easy for a future NL layer to enumerate.
     #
     # `name GLOB ?` rather than LIKE: GLOB is case-sensitive and takes shell
     # wildcards, which is what someone typing --name '*.csv' expects.
+    # `iname` exists because macOS and Windows filesystems are case-insensitive
+    # while SQL GLOB is not: on APFS, `--name '*.txt'` misses `Report.TXT` even
+    # though the filesystem itself treats those names as interchangeable.
+    # lower() rather than a collation, because GLOB ignores COLLATE.
     specs = (
         ("host = ?", host),
         ("root = ?", str(Path(root).expanduser().resolve()) if root else None),
         ("name GLOB ?", name),
+        ("lower(name) GLOB ?", iname.lower() if iname else None),
         ("type = ?", kind),
         ("size > ?", larger_than),
         ("size < ?", smaller_than),

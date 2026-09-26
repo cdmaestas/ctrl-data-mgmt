@@ -65,6 +65,7 @@ cdm du ~/work --depth 2    # two levels
 
 ```bash
 cdm find --name '*.csv' --larger-than 10M --order mtime
+cdm find --iname '*.pdf'            # case-insensitive; see the macOS note below
 cdm find --modified-after 7d --type file --quiet | xargs wc -l
 cdm find --root ~/work --json
 ```
@@ -110,6 +111,37 @@ a hash that is no longer true.
 
 Every skip is counted and printed. An index that silently omits things is worse
 than one that refuses out loud.
+
+## Absence is observed, never assumed
+
+A scan decides a file is gone by not having seen it — and that inference is only
+drawn for directories it could actually read. If a directory can't be opened
+(permissions, an unmounted share, macOS privacy controls), nothing beneath it is
+removed and its existing entries are kept.
+
+If the *root* can't be opened, the scan indexes nothing, removes nothing, leaves
+the root's last-scan time alone, and exits non-zero — reported as a failure, not
+as an empty directory, because those look identical from outside and only one is
+true.
+
+This matters more than it sounds. Without it, running `cdm rescan` while a
+network share happens to be unmounted deletes every row for that root and
+cheerfully reports the files as "no longer on disk."
+
+## On macOS
+
+Fully supported — CI runs the suite on macOS, and the performance numbers above
+were measured on an arm64 Mac. Two platform specifics:
+
+**Privacy controls.** Parts of your home directory — `~/Library/Mail`,
+`~/Library/Messages`, Safari data, the Photos library — can't be read without
+granting Full Disk Access to your terminal. Without it those paths are reported
+as unreadable and skipped, so the index is simply incomplete for them rather
+than wrong about them.
+
+**Case-insensitive filesystems.** APFS treats `Report.TXT` and `report.txt` as
+the same name; SQL `GLOB` doesn't. So `--name '*.txt'` won't match `Report.TXT`.
+Use `--iname` when you want the filesystem's own notion of sameness.
 
 ## Where the data lives
 
