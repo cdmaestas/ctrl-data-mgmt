@@ -151,7 +151,7 @@ jobs:
           import glob, tarfile
           sdist = glob.glob("dist/*.tar.gz")[0]
           names = tarfile.open(sdist).getnames()
-          for wanted in ("man/cdm.1", "docs/multi-host.md", "CONTRIBUTING.md",
+          for wanted in ("man/cdm.1", "docs/multi-host.md", "CONTRIBUTING.md", "CHANGELOG.md",
                          "tests/test_scan.py", "LICENSE"):
               assert any(n.endswith(wanted) for n in names), f"{wanted} missing from sdist"
           print("sdist contents OK")
