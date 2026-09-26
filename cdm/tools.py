@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import db, paths, query, shape
+from . import guide as guide_mod
 from . import suggest as suggest_mod
 
 MAX_ROWS = 500
@@ -50,6 +51,10 @@ SHAPE_TOOLS = {
     "duplicates_summary": "How much space looks duplicated, how much is "
                           "confirmed, and how much of the tree was hashed at "
                           "all. Returns no filenames.",
+    "guide": "Step-by-step setup and upkeep: index a folder, hash it, look at "
+             "suggestions, clean up and rescan, keep it current, connect an AI "
+             "client. Each step's status is read from the index; `next` says "
+             "where the user is. Use for 'how do I get started' or 'what now'.",
     "suggest": "Ranked things worth doing -- caches, stale build output, old "
                "installers, large git histories, model files, duplicates, index "
                "housekeeping -- each with its size, why, a risk level (safe, "
@@ -73,6 +78,18 @@ NAME_TOOLS = {
 # commands), so a user can start from a menu instead of guessing what to ask.
 # (title, description, instructions without names, extra instructions with).
 PROMPTS = {
+    "getting-started": (
+        "Getting started",
+        "A step-by-step walk from first scan to a well-kept index.",
+        "Call `guide`{scope}. Walk the user through it one step at a time, "
+        "starting at the step named in `next`: say why it matters, show the "
+        "command, and say what they will see. Do not run commands yourself. "
+        "When the user says they have run one, call `guide` again and move on "
+        "only once that step shows as done; `advice` and `optional` steps can "
+        "never show as done, so ask instead. Mention steps already done in one "
+        "line rather than walking through them.",
+        "",
+    ),
     "disk-usage": (
         "What's using my disk?",
         "Where the space goes: roots, file sizes, file types and age.",
@@ -194,7 +211,8 @@ class Catalog:
     def summary(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
             out = shape.summary(conn, host=self.host, root=self._root(conn, root))
-        steps = ["Call `suggest` for a ranked list of what is worth doing."]
+        steps = ["Call `suggest` for a ranked list of what is worth doing.",
+                 "Call `guide` if the user is new, or asks what to do next."]
         if any((r["last_scan_age_days"] or 0) >= suggest_mod.STALE_SCAN_DAYS
                for r in out["roots"]):
             steps.insert(0, "Some roots were scanned a week or more ago; answers "
@@ -241,6 +259,14 @@ class Catalog:
         steps.append("Partial-hash groups are probable; `cdm dupes --verify` in a "
                      "terminal confirms them before anything is deleted.")
         return _next(out, steps)
+
+    def guide(self, root: str | None = None) -> dict[str, Any]:
+        with self._open() as conn:
+            out = guide_mod.guide(conn, host=self.host, root=self._root(conn, root))
+        return _next(out, ["Walk the user through the `next` step: why, command, "
+                           "what they will see. They run it; you do not.",
+                           "Call `guide` again after they act, to confirm it "
+                           "shows as done."])
 
     def suggest(self, root: str | None = None, older_than_days: int = 90,
                 limit: int = 20) -> dict[str, Any]:

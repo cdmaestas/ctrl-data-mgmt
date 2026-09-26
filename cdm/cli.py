@@ -1,6 +1,7 @@
 """The command line.
 
-Verbs: scan, rescan, roots, forget, find, du, dupes, suggest, stat, doctor, mcp.
+Verbs: scan, rescan, roots, forget, find, du, dupes, suggest, guide, stat, doctor,
+mcp.
 
 Output goes to stdout as plain columns; anything the user did not ask for --
 skip counts, warnings, timings -- goes to stderr, so `cdm find ... | xargs` and
@@ -19,7 +20,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import db, hashing, paths, probe, query, roots, suggest
+from . import db, guide, hashing, paths, probe, query, roots, suggest
 from .exclude import Excluder
 from .scan import scan_root
 
@@ -405,6 +406,46 @@ def cmd_suggest(args, conn) -> int:
     return 0
 
 
+_MARK = {"done": "[x]", "todo": "[ ]", "advice": "[~]", "optional": "[?]"}
+
+
+def cmd_guide(args) -> int:
+    if args.schedule:
+        # Needs no index: it only prints a job definition to install yourself.
+        # The job goes to stdout so it can be redirected into place as is.
+        job, how = guide.schedule()
+        print(job, end="")
+        _err(how)
+        return 0
+    return _show_guide(args)
+
+
+@with_index
+def _show_guide(args, conn) -> int:
+    result = guide.guide(conn, host=paths.this_host())
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    width = max(60, shutil.get_terminal_size().columns)
+    pad = " " * 9
+    print(f"Getting started with cdm: {result['done']} of {result['of']} done\n")
+    for n, step in enumerate(result["steps"], 1):
+        is_next = step["id"] == result["next"]
+        mark = "[>]" if is_next else _MARK[step["status"]]
+        title = step["title"] + ("  (optional)" if step["status"] == "optional" else "")
+        detail = f"  -- {step['detail']}" if step["detail"] else ""
+        print(f"  {mark} {n}  {title}{detail}")
+        if is_next or args.all:
+            for text in (step["why"], f"Then you'll see: {step['expect']}"):
+                print(textwrap.fill(text, width=width, initial_indent=pad,
+                                    subsequent_indent=pad))
+            print(f"{pad}$ {step['command']}\n")
+    sys.stdout.flush()
+    _err("[x] done  [>] next  [ ] to do  [~] advice the index cannot check  "
+         "[?] optional. --all explains every step.")
+    return 0
+
+
 @with_index
 def cmd_forget(args, conn) -> int:
     host = paths.this_host()
@@ -634,6 +675,14 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("--all-hosts", action="store_true")
     u.add_argument("--json", action="store_true")
     u.set_defaults(func=cmd_du)
+
+    w = sub.add_parser("guide", help="step-by-step: what to do next, from first scan "
+                                     "to a well-kept index")
+    w.add_argument("--all", action="store_true", help="explain every step, not just the next")
+    w.add_argument("--schedule", action="store_true",
+                   help="print a nightly rescan job to install (launchd or cron)")
+    w.add_argument("--json", action="store_true")
+    w.set_defaults(func=cmd_guide)
 
     s = sub.add_parser("suggest", help="ranked things worth doing, with the command "
                                        "for each (changes nothing)")
