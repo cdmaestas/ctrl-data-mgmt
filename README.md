@@ -426,12 +426,17 @@ a tree hashed with nothing recording which half.
 - **No remote scans.** Multi-host fan-out is the reason `host` exists, not
   something v1 does.
 
+What comes next, and in what order, is in [docs/roadmap.md](docs/roadmap.md).
+
 ## Documentation
 
 - **`man/cdm.1`** — the reference: every verb, every flag, exit statuses,
   environment variables. Read it from a checkout with `man ./man/cdm.1`. A pipx
   install links it into `~/.local/share/man`, so `man cdm` just works; a plain
   virtualenv install leaves it inside the venv.
+- **[docs/roadmap.md](docs/roadmap.md)** — the phases after this one and the
+  backlog: Storage Scale at scale, a UI, then packaging for Linux, macOS and
+  Windows.
 - **[docs/multi-host.md](docs/multi-host.md)** — design note on scanning many
   hosts with `pdsh`, and why the index must never live on the shared filesystem.
   Not implemented; recorded so the decisions that keep it cheap survive.

@@ -1,6 +1,9 @@
 # Multi-host scanning with pdsh
 
-**Status: design note. Nothing here is implemented.** The `host` column exists
+**Status: design note, now scheduled.** Export/merge and policy import are
+Phase 2 in [the roadmap](roadmap.md), which settles the question at the end of
+this note: GPFS goes through policy import, and export/merge covers what a
+policy scan cannot see. Nothing here is implemented yet. The `host` column exists
 in the schema; everything else below is a plan, recorded so the v1 decisions
 that make it cheap don't get undone by accident.
 
