@@ -51,4 +51,12 @@ if missing or extra:
     sys.exit(1)
 PY
 
+# CI lints the man page on Linux; do it here too when mandoc is available
+# (it ships with macOS), so a roff error is caught before a push, not after.
+if command -v mandoc >/dev/null 2>&1; then
+  echo "pre-commit: man page lint"
+  lint="$(mandoc -Tlint man/cdm.1 2>&1)" || fail "mandoc -Tlint failed: $lint"
+  [ -z "$lint" ] || fail "man page lint: $lint"
+fi
+
 echo "pre-commit: ok"

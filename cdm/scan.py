@@ -89,6 +89,8 @@ class ScanStats:
     threads: int = 1
     resumed_from: int = 0
     root_unreadable: bool = False
+    # Set when the access-time measurement failed; the summary reports it.
+    atime_note: str | None = None
 
     @property
     def total(self) -> int:
@@ -263,7 +265,9 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
     }
     inner = roots_mod.nested(conn, host, root_key)
     owners = [root_key, *inner]
-    trust = atime_mod.Trust(measured=atime_mod.probe(paths.data_dir()))
+    measured, unmeasured = atime_mod.measure(paths.data_dir())
+    trust = atime_mod.Trust(measured=measured, unmeasured=unmeasured)
+    stats.atime_note = unmeasured
     hash_windows = _hash_windows(conn, host)
 
     # Pre-computed in the main thread: walkers must never touch the connection.
@@ -380,7 +384,12 @@ def scan_root(conn, host: str, root: Path, *, hash_kind: str | None = None,
             try:
                 own = os.stat(path).st_atime
             except OSError:
-                pass
+                # cdm read the file but cannot see what that read did to its
+                # atime, so it cannot discount the read next time. Record both
+                # as unknown rather than let cdm's own read pass for use.
+                # (Previously: silently ignored, and the next scan took cdm's
+                # read for a real one.)
+                return None, None, None
         return last_read, own, unopened
 
     def walk_one(directory: Path):

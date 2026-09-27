@@ -71,7 +71,10 @@ With
 .B \-\-verify
 any file that cannot be read is reported and excluded from the totals, and the
 command exits non-zero: a verification that could not read a file has not
-verified anything about it.
+verified anything about it. Its own reads are remembered so they do not count
+as use (see
+.BR "ACCESS TIMES" );
+if a file's access time cannot be read back afterwards, that is reported too.
 .TP
 .BI "suggest " [ options ]
 List what is worth doing, ranked, with the command for each. Changes nothing.
@@ -328,6 +331,10 @@ does the same. Directories are never given an access time, since scanning
 lists them.
 .B "cdm doctor"
 reports how many files have a trusted access time.
+If the measurement itself fails, a scan says so and falls back to mount
+options, and
+.B "cdm doctor"
+gives the reason.
 .PP
 A narrower fact survives where last read does not: whether a file has been
 opened at all since it last changed. Wherever the first read after a change
@@ -446,7 +453,13 @@ nightly: a launchd agent on macOS, a crontab line elsewhere. The job goes to
 standard output, so it can be redirected into place; how to install and remove
 it goes to standard error.
 .B cdm
-never installs it.
+never installs it. The job runs the
+.B cdm
+found on
+.BR PATH ,
+or, if there is none, the current Python with
+.BR "\-m cdm" ;
+the path is escaped for the plist and quoted for the shell cron uses.
 .RS
 .PP
 .EX
@@ -704,10 +717,12 @@ The scanner walks POSIX directories with
 .BR scandir (3).
 On a parallel filesystem such as IBM Spectrum Scale or Lustre this is the slow
 path by design; the native policy engine reads metadata far faster. This
-version does not read policy\-engine output.
+version does not read policy\-engine output; that is planned for 0.2.0.
 .PP
-Scans are single\-threaded. A stat\-only pass runs at roughly 30,000 entries per
-second on a laptop.
+Hashing is single\-threaded; walking uses one thread on a local disk and up to
+eight on a remote filesystem (see
+.BR CONCURRENCY ).
+A stat\-only pass runs at roughly 30,000 entries per second on a laptop.
 .PP
 The
 .B host

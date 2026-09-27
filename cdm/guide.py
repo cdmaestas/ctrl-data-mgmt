@@ -21,6 +21,7 @@ guide is safe to return with names off.
 from __future__ import annotations
 
 import os
+import plistlib
 import shlex
 import shutil
 import sys
@@ -189,7 +190,19 @@ def cdm_executable() -> str:
     # The pipx link itself, not what it points at: the link survives a
     # reinstall, the virtualenv path behind it does not.
     found = shutil.which("cdm")
-    return os.path.abspath(found) if found else str(Path(sys.argv[0]).resolve())
+    return os.path.abspath(found) if found else ""
+
+
+def _command(executable: str | None) -> list[str]:
+    """The argv a scheduler runs to start cdm.
+
+    `cdm` from PATH when there is one; otherwise this interpreter with `-m cdm`,
+    which is right however cdm was started. Previously this fell back to
+    sys.argv[0], which under `python -m cdm` is `.../cdm/__main__.py`: a job
+    that failed every night, visible only in its log.
+    """
+    exe = executable if executable is not None else cdm_executable()
+    return [exe] if exe else [sys.executable, "-m", "cdm"]
 
 
 def schedule(platform: str | None = None, executable: str | None = None,
@@ -200,33 +213,21 @@ def schedule(platform: str | None = None, executable: str | None = None,
     `cdm guide --schedule > ~/Library/LaunchAgents/<label>.plist`.
     """
     platform = platform or sys.platform
-    exe = executable or cdm_executable()
+    argv = _command(executable)
     if platform == "darwin":
         plist = f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist"
         log = Path("~/Library/Logs/cdm-rescan.log").expanduser()
-        job = f"""\
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>{LAUNCHD_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{exe}</string>
-    <string>rescan</string>
-    <string>--checksum</string>
-    <string>--progress</string>
-    <string>60</string>
-  </array>
-  <key>StartCalendarInterval</key>
-  <dict><key>Hour</key><integer>{hour}</integer><key>Minute</key><integer>{minute}</integer></dict>
-  <key>LowPriorityIO</key><true/>
-  <key>Nice</key><integer>10</integer>
-  <key>StandardErrorPath</key><string>{log}</string>
-</dict>
-</plist>
-"""
+        # plistlib, not a template: it escapes by construction. A template put
+        # the executable path into XML verbatim, so a path with `&` or `<` made
+        # a plist launchd refuses.
+        job = plistlib.dumps({
+            "Label": LAUNCHD_LABEL,
+            "ProgramArguments": [*argv, "rescan", "--checksum", "--progress", "60"],
+            "StartCalendarInterval": {"Hour": hour, "Minute": minute},
+            "LowPriorityIO": True,
+            "Nice": 10,
+            "StandardErrorPath": str(log),
+        }).decode()
         how = f"""\
 Nightly `cdm rescan --checksum` at {hour:02d}:{minute:02d} as a launchd agent. To install:
   cdm guide --schedule > {plist}
@@ -237,7 +238,11 @@ A run missed while the Mac slept happens at next wake. Folders protected by
 macOS privacy controls stay unreadable to a background job unless you grant it
 Full Disk Access; {log} lists what was skipped."""
         return job, how
-    job = (f"{minute} {hour} * * * nice -n 10 {exe} rescan --checksum --progress 60 "
+    # cron hands the command to a shell, so the path is quoted; and cron turns
+    # an unescaped % into a newline, so those are escaped after quoting.
+    # Unquoted, a path with `&` or `;` ran as more than one command.
+    quoted = " ".join(shlex.quote(a) for a in argv).replace("%", "\\%")
+    job = (f"{minute} {hour} * * * nice -n 10 {quoted} rescan --checksum --progress 60 "
            f'>>"$HOME/.cdm-rescan.log" 2>&1\n')
     how = f"""\
 Nightly `cdm rescan --checksum` at {hour:02d}:{minute:02d} as a cron job. To install:

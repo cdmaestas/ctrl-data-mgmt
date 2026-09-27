@@ -417,3 +417,78 @@ def test_find_and_stat_show_unopened_files(tmp_path, monkeypatch, capsys, downlo
     assert capsys.readouterr().out.split() == [str(f.resolve())]
     assert cli.main(["stat", str(f)]) == 0
     assert "opened    not since it last changed, as of" in capsys.readouterr().out
+
+
+# --- hardening: failures that used to be silent --------------------------------
+
+def test_a_failed_measurement_says_so(tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0o500)
+    try:
+        if os.access(locked, os.W_OK):
+            pytest.skip("running as a user who can write anywhere")
+        with pytest.raises(atime.ProbeFailed, match="scratch file"):
+            atime.probe(locked)
+        result, why = atime.measure(locked)
+        assert result is None and "scratch file" in why
+    finally:
+        os.chmod(locked, 0o700)
+
+
+def test_the_fallback_verdict_carries_the_failed_measurement(tmp_path):
+    here = str(tmp_path.resolve())
+    trust = RealTrust(table=[(here, {"rw"})], platform="linux",
+                      unmeasured="measuring in /x failed: boom")
+    mode, why = trust.check(here, os.stat(here).st_dev)
+    assert mode == atime.LAST and "not measured: measuring in /x failed: boom" in why
+
+
+def test_scan_reports_a_failed_measurement(tmp_path, monkeypatch, capsys, tree):
+    root, f = tree
+    monkeypatch.setenv("CDM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(scan_mod.atime_mod, "measure", lambda d: (None, "no scratch space"))
+    assert cli.main(["scan", str(root)]) == 0
+    assert "access times: not measured (no scratch space)" in capsys.readouterr().err
+
+
+def test_if_cdm_cannot_see_what_its_read_did_the_file_is_unknown(conn, tree, monkeypatch,
+                                                                reads_move_atime):
+    """Previously ignored, so the next scan counted cdm's own read as a use."""
+    root, f = tree
+    real_stat = os.stat
+    hashed = set()
+    real_compute = hashing.compute
+
+    def compute(path, *args):
+        out = real_compute(path, *args)
+        hashed.add(str(path))     # only cdm's post-read stat should fail
+        return out
+
+    def stat(path, *a, **k):
+        if str(path) in hashed:
+            raise PermissionError("gone")
+        return real_stat(path, *a, **k)
+    monkeypatch.setattr(hashing, "compute", compute)
+    monkeypatch.setattr(scan_mod.os, "stat", stat)
+    scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
+    r = row(conn, f)
+    assert r["hash"] and r["atime"] is None and r["self_atime"] is None
+    assert r["unopened_until"] is None
+
+
+def test_dupes_verify_reports_reads_it_could_not_record(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CDM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CDM_HOST", HOST)
+    root = tmp_path / "home"
+    root.mkdir()
+    for n in ("a.bin", "b.bin"):
+        (root / n).write_bytes(b"same" * 1000)
+    assert cli.main(["scan", str(root), "--checksum"]) == 0
+    real_stat = os.stat
+    monkeypatch.setattr(query.os, "stat",
+                        lambda p, *a, **k: (_ for _ in ()).throw(OSError("gone"))
+                        if str(p).endswith("a.bin") else real_stat(p, *a, **k))
+    capsys.readouterr()
+    assert cli.main(["dupes", "--verify"]) == 0
+    assert "could not read back the access time of 1 file(s)" in capsys.readouterr().err

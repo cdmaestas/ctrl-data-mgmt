@@ -93,6 +93,12 @@ Change these only deliberately, and update the man page when you do:
   spends the evidence, so it means "not opened between its last change and this
   date", never "unused"; groups use their earliest date. See
   [docs/adr/0006](docs/adr/0006-never-opened-is-recorded-with-the-date-it-was-last-true.md).
+- **Every option of every verb is in the man page.** `tests/test_docs.py` fails
+  otherwise, and the pre-commit hook lints the man page with `mandoc` when it is
+  installed (it ships with macOS), as CI does on Linux.
+- **Generated files a scheduler or shell will read are built, not templated.**
+  The launchd plist comes from `plistlib` and the cron line from `shlex.quote`
+  (with `%` escaped), because a path containing `&`, `<` or `;` broke both.
 - **All MCP behaviour lives in `cdm/tools.py`, which is stdlib-only.**
   `cdm/mcp_server.py` only registers it with the SDK. That split is what lets
   the Python 3.9 CI job test the tools without the SDK, which needs 3.10+.

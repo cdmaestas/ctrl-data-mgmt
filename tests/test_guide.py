@@ -162,3 +162,31 @@ def test_progress_has_a_fixed_total(conn, tree):
     full = guide.guide(conn, host=HOST)
     assert (empty["done"], empty["of"]) == (0, 3)
     assert (full["done"], full["of"]) == (3, 3)
+
+
+# --- hardening ------------------------------------------------------------------
+
+HOSTILE = "/Users/o'neil & <co>/100%/bin/cdm"
+
+
+def test_the_launchd_job_survives_a_hostile_path():
+    """A template put the path into XML verbatim: `&` or `<` broke the plist."""
+    job, _ = guide.schedule("darwin", executable=HOSTILE)
+    assert plistlib.loads(job.encode())["ProgramArguments"][0] == HOSTILE
+
+
+def test_the_cron_line_passes_a_hostile_path_as_one_word():
+    """Unquoted, `&` or `;` ran as more than one command; cron turns `%` into newline."""
+    import shlex
+    job, _ = guide.schedule("linux", executable=HOSTILE)
+    command = job.split(" ", 5)[5]
+    assert "\\%" in command and "%/" not in command.replace("\\%", "")
+    assert shlex.split(command.replace("\\%", "%"))[3] == HOSTILE
+
+
+def test_without_cdm_on_path_the_job_runs_this_python(monkeypatch):
+    """Previously sys.argv[0]: under `python -m cdm`, a path to __main__.py."""
+    import sys
+    monkeypatch.setattr(guide.shutil, "which", lambda name: None)
+    job, _ = guide.schedule("darwin")
+    assert plistlib.loads(job.encode())["ProgramArguments"][:3] == [sys.executable, "-m", "cdm"]

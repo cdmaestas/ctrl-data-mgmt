@@ -86,6 +86,22 @@ commit. It becomes `0.1.0` when that is tagged.
 
 ### Fixed
 
+- `cdm guide --schedule` built the launchd plist and cron line by pasting the
+  executable path in: a path containing `&` or `<` made a plist launchd
+  refuses, and in the cron line `&`, `;` or `%` split or broke the command. The
+  plist is now generated with `plistlib`, the cron command shell-quoted with
+  `%` escaped. When `cdm` is not on `PATH` the job now runs
+  `python -m cdm`; it used to fall back to `sys.argv[0]`, which under
+  `python -m cdm` pointed at `__main__.py` and failed every night.
+- A failed access-time measurement is no longer silent: the scan says it fell
+  back to mount options, and `doctor` gives the reason. Failing to remove the
+  probe's scratch file counts as a failure instead of leaving it unmentioned.
+- If cdm cannot read a file's access time back after its own read, the file's
+  access time and "never opened" are recorded as unknown. Previously the error
+  was ignored and the next scan counted cdm's read as a use. `dupes --verify`
+  reports the same case instead of skipping it.
+- The man page said scans are single-threaded; walking has used threads on
+  remote filesystems since the start. Only hashing is.
 - A rescan now removes everything beneath a directory that was deleted, not
   just the directory itself. Previously the deeper rows stayed in the index
   forever, so a cleared cache kept showing up in `du`, `suggest` and MCP.

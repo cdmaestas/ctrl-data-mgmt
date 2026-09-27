@@ -159,6 +159,9 @@ def _report_scan(root: Path, stats, ex: Excluder) -> None:
     if stats.resumed_from:
         _err(f"  resumed from a checkpoint: {stats.resumed_from} "
              f"director{'y' if stats.resumed_from == 1 else 'ies'} already done")
+    if stats.atime_note:
+        _err(f"  access times: not measured ({stats.atime_note}); judged from mount "
+             f"options instead")
     if stats.hashed or stats.reused_hashes:
         _err(f"  hashed {stats.hashed} ({human_size(stats.hashed_bytes)} read, "
              f"{human_size(bytes_per_sec)}/s), reused {stats.reused_hashes} unchanged")
@@ -332,7 +335,11 @@ def cmd_dupes(args, conn) -> int:
                 print(f"    {row['path']}")
     _err(f"reclaimable: {human_size(total)}")
     if reads:
-        query.record_own_reads(conn, paths.this_host(), reads)
+        blind = query.record_own_reads(conn, paths.this_host(), reads)
+        if blind:
+            _err(f"cdm: could not read back the access time of {len(blind)} file(s) "
+                 f"after verifying them, so the next scan may count cdm's read as "
+                 f"a use; first: {blind[0]}")
     if unreadable:
         # Never silent: a verification that could not read a file has not
         # verified anything about it.
@@ -573,7 +580,10 @@ def cmd_doctor(args) -> int:
     print(f"roots     {len(roots)}")
     # rc is NOT reset here: a permissions failure found above must survive to
     # the exit status, not be overwritten by a later clean check.
-    trust = atime.Trust(measured=atime.probe(paths.data_dir())) if roots else None
+    trust = None
+    if roots:
+        measured, unmeasured = atime.measure(paths.data_dir())
+        trust = atime.Trust(measured=measured, unmeasured=unmeasured)
     for r in roots:
         gone = "" if Path(r["path"]).is_dir() else "   <- gone from disk"
         if gone:
