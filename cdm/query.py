@@ -152,22 +152,29 @@ def verify_group(group, reads: dict[str, float] | None = None
             continue
         if reads is not None:
             # This read may have moved the atime; record_own_reads() stops it
-            # being mistaken for use on the next scan.
+            # being mistaken for use on the next scan. If the atime cannot be
+            # read back, None records that it could not be (previously this was
+            # silently skipped); the caller reports it.
             try:
                 reads[str(path)] = os.stat(path).st_atime
             except OSError:
-                pass
+                reads[str(path)] = None
         by_digest.setdefault(digest, []).append(str(path))
     return [paths for paths in by_digest.values() if len(paths) > 1], unreadable
 
 
-def record_own_reads(conn, host: str, reads: dict[str, float]) -> None:
-    """Remember the atimes cdm's own full reads left behind. See scan.atime_for."""
+def record_own_reads(conn, host: str, reads: dict[str, float | None]) -> list[str]:
+    """Remember the atimes cdm's own full reads left behind. See scan.atime_for.
+
+    Returns the paths whose atime could not be read back after cdm read them:
+    for those, the next scan may take cdm's read for a real one.
+    """
     conn.executemany(
         "UPDATE files SET self_atime = ? WHERE host = ? AND path = ? "
         "AND atime IS NOT NULL",
-        [(t, host, p) for p, t in reads.items()])
+        [(t, host, p) for p, t in reads.items() if t is not None])
     conn.commit()
+    return sorted(p for p, t in reads.items() if t is None)
 
 
 def disk_usage(conn, under: str, *, depth: int = 1, host=None, limit: int = 40):

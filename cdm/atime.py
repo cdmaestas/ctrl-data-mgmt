@@ -86,20 +86,31 @@ def _verdict(point: str, opts: set[str], platform: str) -> tuple[bool, str]:
     return True, f"{point} updates access times"
 
 
-def probe(directory: Path) -> tuple[int, str] | None:
+class ProbeFailed(Exception):
+    """The measurement could not be made; the reason is the message."""
+
+
+def probe(directory: Path) -> tuple[int, str]:
     """(device, mode) measured with a scratch file in `directory`.
 
     Two reads tell the three modes apart. A read that moves a day-old atime
     NEWER than the mtime means every read counts, to within a day: LAST. If not,
     a read that moves an atime OLDER than the mtime means only the first read
     after a change counts: FIRST (measured on macOS APFS). If neither moves it:
-    NONE. `directory` must be somewhere cdm may write; None if it cannot.
+    NONE. `directory` must be somewhere cdm may write.
+
+    Raises ProbeFailed rather than returning a quiet default: a failed
+    measurement falls back to mount options, and whoever shows the verdict
+    must be able to say it was not measured, and why. Failing to remove the
+    scratch file is a failure too -- it would otherwise sit in the data
+    directory unmentioned.
     """
     try:
-        directory.mkdir(parents=True, exist_ok=True)
+        # 0700, like the data directory itself; normally it already exists.
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix=".cdm-atime-probe-", dir=directory)
-    except OSError:
-        return None
+    except OSError as exc:
+        raise ProbeFailed(f"could not create a scratch file in {directory}: {exc}") from exc
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(b"probe")
@@ -114,17 +125,35 @@ def probe(directory: Path) -> tuple[int, str] | None:
 
         dev = os.stat(name).st_dev
         if moves(now - 2 * DAY, now - 3 * DAY):
-            return dev, LAST
-        if moves(now - 3 * DAY, now - 2 * DAY):
-            return dev, FIRST
-        return dev, NONE
+            result = dev, LAST
+        elif moves(now - 3 * DAY, now - 2 * DAY):
+            result = dev, FIRST
+        else:
+            result = dev, NONE
+    except OSError as exc:
+        _remove(name)
+        raise ProbeFailed(f"measuring in {directory} failed: {exc}") from exc
+    try:
+        os.unlink(name)
+    except OSError as exc:
+        raise ProbeFailed(f"measured, but could not remove the scratch file {name}: "
+                          f"{exc}") from exc
+    return result
+
+
+def measure(directory: Path) -> tuple[tuple[int, str] | None, str | None]:
+    """probe(), for callers that fall back: (result, None) or (None, why not)."""
+    try:
+        return probe(directory), None
+    except ProbeFailed as exc:
+        return None, str(exc)
+
+
+def _remove(name: str) -> None:
+    try:
+        os.unlink(name)
     except OSError:
-        return None
-    finally:
-        try:
-            os.unlink(name)
-        except OSError:
-            pass
+        pass   # already failing; the ProbeFailed raised by the caller says so
 
 
 _MEASURED = {
@@ -151,9 +180,12 @@ class Trust:
 
     def __init__(self, table: list[tuple[str, set[str]]] | None = None,
                  measured: tuple[int, str] | None = None,
-                 platform: str | None = None):
+                 platform: str | None = None, unmeasured: str | None = None):
         self._table = _mount_table() if table is None else table
         self._platform = platform or sys.platform
+        # Why the measurement was not made, if it was attempted and failed;
+        # appended to every verdict that falls back to mount options.
+        self._unmeasured = unmeasured
         self._by_dev: dict[int, tuple[str, str]] = {}
         if measured is not None:
             dev, mode = measured
@@ -163,7 +195,10 @@ class Trust:
         """(mode, why) for the filesystem holding `path`."""
         cached = self._by_dev.get(dev)
         if cached is None:
-            cached = self._by_dev[dev] = self._decide(path, dev)
+            mode, why = self._decide(path, dev)
+            if self._unmeasured:
+                why += f"; not measured: {self._unmeasured}"
+            cached = self._by_dev[dev] = (mode, why)
         return cached
 
     def _decide(self, path: str, dev: int) -> tuple[str, str]:

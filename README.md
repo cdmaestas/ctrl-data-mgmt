@@ -439,7 +439,7 @@ What comes next, and in what order, is in [docs/roadmap.md](docs/roadmap.md).
   Windows.
 - **[docs/multi-host.md](docs/multi-host.md)** — design note on scanning many
   hosts with `pdsh`, and why the index must never live on the shared filesystem.
-  Not implemented; recorded so the decisions that keep it cheap survive.
+  Scheduled for phase 2 (see the roadmap); not implemented yet.
 - **[docs/adr/](docs/adr/)** — decision records: why names are opt-in over MCP
   (0002), why suggestions come from one advisory engine (0003), and why the
   getting-started guide takes its status from the index (0004), when an access
