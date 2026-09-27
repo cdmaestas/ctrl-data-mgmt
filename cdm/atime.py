@@ -12,6 +12,11 @@ easiest to get wrong three ways:
   semantics or better -- and an untrusted atime is stored as NULL, never as a
   date. It is measured where cdm may write (its own data directory) and read
   from mount options elsewhere.
+
+  A FIRST filesystem still answers a narrower question: has the file been
+  read at all since it last changed? That is recorded separately, as
+  `unopened_until`, dated because cdm's own first read uses the answer up.
+  See docs/adr/0006.
 * cdm's own reads update it. Hashing opens every new file, so without care the
   first `--checksum` scan would make everything look read today. See scan.py
   for how its own reads are recognised and discounted, and hashing.py for
@@ -34,6 +39,12 @@ from pathlib import Path
 
 # Options that mean the atime on that filesystem never moves.
 _FROZEN = ("noatime", "read-only", "ro")
+
+DAY = 86400
+# What a file's atime means on a filesystem:
+LAST = "last"     # every read moves it (to within a day): it is the last read
+FIRST = "first"   # only the first read after a change moves it (macOS APFS)
+NONE = "none"     # reads never move it (noatime, read-only), or it is unknown
 
 
 def _mount_table() -> list[tuple[str, set[str]]]:
@@ -75,12 +86,14 @@ def _verdict(point: str, opts: set[str], platform: str) -> tuple[bool, str]:
     return True, f"{point} updates access times"
 
 
-def probe(directory: Path) -> tuple[int, bool] | None:
-    """(device, whether a read moves a day-old atime newer than the mtime).
+def probe(directory: Path) -> tuple[int, str] | None:
+    """(device, mode) measured with a scratch file in `directory`.
 
-    The one test that tells "last read" semantics from "first read after a
-    change" apart. Uses a scratch file in `directory`, which must be somewhere
-    cdm may write; returns None if that is not possible.
+    Two reads tell the three modes apart. A read that moves a day-old atime
+    NEWER than the mtime means every read counts, to within a day: LAST. If not,
+    a read that moves an atime OLDER than the mtime means only the first read
+    after a change counts: FIRST (measured on macOS APFS). If neither moves it:
+    NONE. `directory` must be somewhere cdm may write; None if it cannot.
     """
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -91,12 +104,20 @@ def probe(directory: Path) -> tuple[int, bool] | None:
         with os.fdopen(fd, "wb") as f:
             f.write(b"probe")
         now = time.time()
-        os.utime(name, (now - 2 * 86400, now - 3 * 86400))   # atime newer than mtime
-        before = os.stat(name).st_atime
-        with open(name, "rb") as f:
-            f.read()
-        st = os.stat(name)
-        return st.st_dev, st.st_atime != before
+
+        def moves(atime: float, mtime: float) -> bool:
+            os.utime(name, (atime, mtime))
+            before = os.stat(name).st_atime
+            with open(name, "rb") as f:
+                f.read()
+            return os.stat(name).st_atime != before
+
+        dev = os.stat(name).st_dev
+        if moves(now - 2 * DAY, now - 3 * DAY):
+            return dev, LAST
+        if moves(now - 3 * DAY, now - 2 * DAY):
+            return dev, FIRST
+        return dev, NONE
     except OSError:
         return None
     finally:
@@ -106,28 +127,46 @@ def probe(directory: Path) -> tuple[int, bool] | None:
             pass
 
 
+_MEASURED = {
+    LAST: "measured: every read moves the access time (to within a day)",
+    FIRST: "measured: only the first read after a change moves the access time",
+    NONE: "measured: reads never move the access time",
+}
+
+
+def _verdict(point: str, opts: set[str], platform: str) -> tuple[str, str]:
+    frozen = sorted(opts.intersection(_FROZEN))
+    if frozen:
+        return NONE, f"{point} is mounted {', '.join(frozen)}"
+    if platform == "darwin":
+        # Mount options cannot show APFS's first-read-only rule; only a
+        # measurement can, and this device was not measured.
+        return NONE, (f"{point}: not measured, and macOS may update access "
+                      f"times only on the first read after a change")
+    return LAST, f"{point} updates access times"
+
+
 class Trust:
-    """Whether a file's atime can be believed, decided once per device."""
+    """What a file's atime means, decided once per device: LAST, FIRST or NONE."""
 
     def __init__(self, table: list[tuple[str, set[str]]] | None = None,
-                 measured: tuple[int, bool] | None = None,
+                 measured: tuple[int, str] | None = None,
                  platform: str | None = None):
         self._table = _mount_table() if table is None else table
         self._platform = platform or sys.platform
-        self._by_dev: dict[int, tuple[bool, str]] = {}
+        self._by_dev: dict[int, tuple[str, str]] = {}
         if measured is not None:
-            dev, moves = measured
-            self._by_dev[dev] = (moves, "measured: a read moves a day-old access time"
-                                 if moves else "measured: a read only moves the access "
-                                 "time on the first read after a change")
+            dev, mode = measured
+            self._by_dev[dev] = (mode, _MEASURED[mode])
 
-    def check(self, path: str, dev: int) -> tuple[bool, str]:
+    def check(self, path: str, dev: int) -> tuple[str, str]:
+        """(mode, why) for the filesystem holding `path`."""
         cached = self._by_dev.get(dev)
         if cached is None:
             cached = self._by_dev[dev] = self._decide(path, dev)
         return cached
 
-    def _decide(self, path: str, dev: int) -> tuple[bool, str]:
+    def _decide(self, path: str, dev: int) -> tuple[str, str]:
         # By device first. Paths mislead: on macOS /Users is a firmlink into
         # /System/Volumes/Data, so by path it sits under the read-only system
         # volume at / while its bytes live on a writable one.
@@ -142,7 +181,7 @@ class Trust:
                 return _verdict(point, opts, self._platform)
         # No mount table (an unsupported platform, or it could not be read):
         # an unverifiable atime is not recorded rather than guessed at.
-        return False, "could not read the mount table to check"
+        return NONE, "could not read the mount table to check"
 
 
 def open_quietly(path: Path | str):

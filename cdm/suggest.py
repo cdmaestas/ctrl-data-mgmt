@@ -111,6 +111,10 @@ class Item:
     # Latest trusted access time below this item, where the filesystem records
     # one. None means unknown, never "not read".
     last_read: str | None = None
+    # Files known not opened since they last changed (see ADR 0006), and for a
+    # single file, as of when.
+    unopened: int = 0
+    unopened_as_of: str | None = None
 
     @property
     def size(self) -> str:
@@ -368,7 +372,7 @@ def _file_rules(idx: _Index, now: float) -> list[Suggestion]:
         f"{INSTALLER_AGE_DAYS}+ days. Usually downloadable again.", REVIEW)
     stores: dict[str, list] = {}
     for r in idx.conn.execute(
-            f"SELECT path, name, parent, size, mtime, atime FROM files "
+            f"SELECT path, name, parent, size, mtime, atime, unopened_until FROM files "
             f"WHERE type = 'file' AND size >= ? AND {idx.scope}",
             [min(MIN_INSTALLER, MIN_MODEL_FILE), *idx.params]):
         ext = _ext(r["name"])
@@ -378,9 +382,10 @@ def _file_rules(idx: _Index, now: float) -> list[Suggestion]:
                 ext in INSTALLER_EXT
                 or (ext in ARCHIVE_EXT and DOWNLOAD_DIRS & set(parts[:-1]))):
             installers.bytes += r["size"]
-            installers.items.append(Item(r["path"], r["size"], 1, _iso(r["mtime"]),
-                                         f"rm {shlex.quote(r['path'])}",
-                                         _iso(r["atime"])))
+            installers.items.append(Item(
+                r["path"], r["size"], 1, _iso(r["mtime"]), f"rm {shlex.quote(r['path'])}",
+                _iso(r["atime"]), int(r["unopened_until"] is not None),
+                _iso(r["unopened_until"])))
             continue
         if r["size"] >= MIN_MODEL_FILE and (ext in MODEL_EXT
                                             or MODEL_DIRS & set(parts[:-1])):
@@ -391,10 +396,14 @@ def _file_rules(idx: _Index, now: float) -> list[Suggestion]:
                 if parts[i] == "models":
                     store = "/".join(parts[:i + 1])
                     break
-            entry = stores.setdefault(store, [0, 0, 0.0, None])
+            entry = stores.setdefault(store, [0, 0, 0.0, None, 0, None])
             entry[0] += r["size"]
             entry[1] += 1
             entry[2] = max(entry[2], r["mtime"])
+            if r["unopened_until"] is not None:
+                entry[4] += 1
+                # The earliest date: never claim more than the weakest evidence.
+                entry[5] = min(entry[5] or r["unopened_until"], r["unopened_until"])
             if r["atime"] is not None:
                 entry[3] = max(entry[3] or 0.0, r["atime"])
 
@@ -408,12 +417,14 @@ def _file_rules(idx: _Index, now: float) -> list[Suggestion]:
             "Large model weights, grouped by where they are stored, with when "
             "each store was last modified and, where the filesystem records it, "
             "last read. A model you run is read when it loads, so an old last "
-            "read is a good sign it is unused. Remove models with the tool that "
-            "downloaded them.", REVIEW,
+            "read is a good sign it is unused. 'Never opened' counts weights "
+            "not loaded since they were downloaded or last changed, as of the "
+            "date shown. Remove models with the tool that downloaded them.", REVIEW,
             action="e.g. `ollama list` then `ollama rm <model>`")
-        for store, (total, n, newest, read) in stores.items():
+        for store, (total, n, newest, read, unopened, as_of) in stores.items():
             models.bytes += total
-            models.items.append(Item(store, total, n, _iso(newest), last_read=_iso(read)))
+            models.items.append(Item(store, total, n, _iso(newest), last_read=_iso(read),
+                                     unopened=unopened, unopened_as_of=_iso(as_of)))
         models.items.sort(key=lambda i: i.bytes, reverse=True)
         out.append(models)
     return out

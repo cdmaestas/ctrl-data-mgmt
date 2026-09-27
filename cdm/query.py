@@ -47,7 +47,7 @@ def parse_when(text: str, *, now: float | None = None) -> float:
 def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
          larger_than=None, smaller_than=None, modified_after=None,
          modified_before=None, accessed_after=None, accessed_before=None,
-         order="size", limit=100):
+         unopened=False, order="size", limit=100):
     # Every filter is one optional AND-ed clause over one column. Keeping them
     # in a table rather than a run of ifs is what makes the set easy to extend
     # -- and easy for a future NL layer to enumerate.
@@ -81,6 +81,9 @@ def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
             clauses.append(sql_fragment)
             params.extend(value if isinstance(value, list) else [value])
 
+    if unopened:
+        # Known not opened since its last change. Unknown never matches.
+        clauses.append("unopened_until IS NOT NULL")
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     order_sql = {"size": "size DESC", "mtime": "mtime DESC",
                  "atime": "atime IS NULL, atime DESC",

@@ -89,6 +89,10 @@ Change these only deliberately, and update the man page when you do:
   a filesystem where reads move atime; without that they pass trivially on one
   where they do not (macOS, or Linux with `O_NOATIME`). See
   [docs/adr/0005](docs/adr/0005-access-time-is-recorded-only-where-it-means-last-read.md).
+- **"Never opened" always travels with its date.** On macOS cdm's own first read
+  spends the evidence, so it means "not opened between its last change and this
+  date", never "unused"; groups use their earliest date. See
+  [docs/adr/0006](docs/adr/0006-never-opened-is-recorded-with-the-date-it-was-last-true.md).
 - **All MCP behaviour lives in `cdm/tools.py`, which is stdlib-only.**
   `cdm/mcp_server.py` only registers it with the SDK. That split is what lets
   the Python 3.9 CI job test the tools without the SDK, which needs 3.10+.

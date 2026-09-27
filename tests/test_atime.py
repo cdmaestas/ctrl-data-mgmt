@@ -98,10 +98,10 @@ def test_trust_is_decided_by_device_then_path(tmp_path):
     here = str(tmp_path.resolve())
     dev = os.stat(here).st_dev
     linux = {"platform": "linux"}
-    assert RealTrust(table=[(here, {"ro"})], **linux).check(here + "/x", dev)[0] is False
-    assert RealTrust(table=[(here, {"rw"})], **linux).check(here + "/x", dev)[0] is True
-    # No mount table at all: unverifiable, so not trusted.
-    assert RealTrust(table=[], **linux).check(here, dev)[0] is False
+    assert RealTrust(table=[(here, {"ro"})], **linux).check(here + "/x", dev)[0] == atime.NONE
+    assert RealTrust(table=[(here, {"rw"})], **linux).check(here + "/x", dev)[0] == atime.LAST
+    # No mount table at all: unverifiable, so nothing is recorded.
+    assert RealTrust(table=[], **linux).check(here, dev)[0] == atime.NONE
 
 
 def test_macos_is_trusted_only_where_measured(tmp_path):
@@ -109,19 +109,21 @@ def test_macos_is_trusted_only_where_measured(tmp_path):
     here = str(tmp_path.resolve())
     dev = os.stat(here).st_dev
     table = [(here, {"apfs", "local"})]
-    assert RealTrust(table=table, platform="darwin").check(here, dev)[0] is False
-    assert RealTrust(table=table, platform="darwin",
-                     measured=(dev, True)).check(here, dev)[0] is True
-    # A measurement beats the mount options, both ways.
+    assert RealTrust(table=table, platform="darwin").check(here, dev)[0] == atime.NONE
+    for mode in (atime.LAST, atime.FIRST, atime.NONE):
+        got = RealTrust(table=table, platform="darwin", measured=(dev, mode))
+        assert got.check(here, dev)[0] == mode
+    # A measurement beats the mount options.
     assert RealTrust(table=[(here, {"rw"})], platform="linux",
-                     measured=(dev, False)).check(here, dev)[0] is False
+                     measured=(dev, atime.NONE)).check(here, dev)[0] == atime.NONE
 
 
 def test_the_probe_measures_and_leaves_nothing_behind(tmp_path):
     result = atime.probe(tmp_path / "data")
     assert result is not None
-    dev, moves = result
-    assert dev == os.stat(tmp_path).st_dev and isinstance(moves, bool)
+    dev, mode = result
+    assert dev == os.stat(tmp_path).st_dev
+    assert mode in (atime.LAST, atime.FIRST, atime.NONE)
     assert list((tmp_path / "data").iterdir()) == []
 
 
@@ -281,3 +283,137 @@ def test_a_schema_3_index_gains_the_columns_and_keeps_its_rows(tmp_path, tree):
         assert row(c, f)["hash"], "the upgrade lost data"
     finally:
         c.close()
+
+
+# --- "not opened since it last changed" (ADR 0006) ------------------------------
+
+class _Fixed:
+    """A Trust that reports one mode for every file."""
+
+    def __init__(self, mode):
+        self.mode = mode
+
+    def check(self, path, dev):
+        return self.mode, "test"
+
+
+@pytest.fixture()
+def mode(monkeypatch):
+    def use(m):
+        monkeypatch.setattr(scan_mod.atime_mod, "Trust", lambda **_: _Fixed(m))
+    return use
+
+
+@pytest.fixture()
+def apfs_reads(monkeypatch):
+    """cdm's reads move atime only on the first read after a change, like APFS."""
+    real = hashing.compute
+
+    def reading(path, *args):
+        out = real(path, *args)
+        st = os.stat(path)
+        if st.st_atime < st.st_mtime:
+            os.utime(path, (time.time(), st.st_mtime))
+        return out
+    monkeypatch.setattr(hashing, "compute", reading)
+
+
+@pytest.fixture()
+def download(tmp_path):
+    """A file written after it was created and never opened: atime < mtime."""
+    root = tmp_path / "home"
+    (root / "Downloads").mkdir(parents=True)
+    f = root / "Downloads" / "Tool.dmg"
+    f.write_bytes(b"x" * 5000)
+    touch(f, atime_=NOW - 20 * DAY, mtime_=NOW - 19 * DAY)
+    return root, f
+
+
+def test_a_file_never_opened_since_it_changed_is_recorded(conn, download, mode):
+    mode(atime.FIRST)
+    root, f = download
+    before = time.time()
+    scan_root(conn, HOST, root)
+    r = row(conn, f)
+    assert r["unopened_until"] is not None and r["unopened_until"] >= before - 1
+    assert r["atime"] is None, "on a FIRST filesystem atime is not a last read"
+
+
+def test_an_opened_file_is_not_unopened(conn, download, mode):
+    mode(atime.FIRST)
+    root, f = download
+    touch(f, atime_=NOW - DAY, mtime_=NOW - 19 * DAY)   # read after its last change
+    scan_root(conn, HOST, root)
+    assert row(conn, f)["unopened_until"] is None
+
+
+def test_on_apfs_cdms_read_freezes_the_date(conn, download, mode, apfs_reads):
+    """cdm's first read uses up the evidence, so the date must stop moving."""
+    mode(atime.FIRST)
+    root, f = download
+    scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
+    first = row(conn, f)["unopened_until"]
+    assert os.stat(f).st_atime > os.stat(f).st_mtime, "the simulated read did not land"
+    scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
+    assert row(conn, f)["unopened_until"] == first
+
+
+def test_where_every_read_counts_the_date_keeps_up(conn, download, mode, apfs_reads):
+    mode(atime.LAST)
+    root, f = download
+    scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
+    first = row(conn, f)["unopened_until"]
+    scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
+    assert row(conn, f)["unopened_until"] > first
+
+
+def test_a_change_starts_the_question_over(conn, download, mode, apfs_reads):
+    mode(atime.FIRST)
+    root, f = download
+    scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
+    touch(f, atime_=NOW - DAY, mtime_=NOW - DAY / 2)        # rewritten since
+    scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
+    assert row(conn, f)["unopened_until"] >= NOW - 1
+
+
+def test_an_upgraded_apfs_index_is_dated_to_the_scan_that_read_it(conn, download, mode):
+    """On FIRST, an earlier cdm read could only move the atime of an unopened file."""
+    mode(atime.FIRST)
+    root, f = download
+    scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
+    ours = NOW - 3 * DAY
+    conn.execute("UPDATE files SET atime = NULL, self_atime = NULL, unopened_until = NULL")
+    conn.execute("DELETE FROM scans")
+    conn.execute("INSERT INTO scans (host, root, scan_id, started_at, finished_at, "
+                 "hash_kind) VALUES (?, ?, 'old', ?, ?, 'partial')",
+                 (HOST, str(root.resolve()),
+                  datetime.fromtimestamp(ours - 60).isoformat(),
+                  datetime.fromtimestamp(ours + 60).isoformat()))
+    conn.commit()
+    touch(f, atime_=ours, mtime_=NOW - 19 * DAY)            # moved by that scan's read
+
+    scan_root(conn, HOST, root, hash_kind=hashing.PARTIAL)
+    assert row(conn, f)["unopened_until"] == pytest.approx(ours - 60, abs=1)
+
+
+def test_nothing_is_recorded_where_reads_never_count(conn, download, mode):
+    mode(atime.NONE)
+    root, f = download
+    scan_root(conn, HOST, root)
+    r = row(conn, f)
+    assert r["unopened_until"] is None and r["atime"] is None
+
+
+def test_find_and_stat_show_unopened_files(tmp_path, monkeypatch, capsys, download, mode):
+    mode(atime.FIRST)
+    root, f = download
+    (root / "Downloads" / "used.pdf").write_bytes(b"y")
+    touch(root / "Downloads" / "used.pdf", atime_=NOW - DAY, mtime_=NOW - 5 * DAY)
+    monkeypatch.setenv("CDM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CDM_HOST", HOST)
+    assert cli.main(["scan", str(root)]) == 0
+    capsys.readouterr()
+    assert cli.main(["find", "--unopened", "--quiet"]) == 0
+    assert capsys.readouterr().out.split() == [str(f.resolve())]
+    assert cli.main(["stat", str(f)]) == 0
+    assert "opened    not since it last changed, as of" in capsys.readouterr().out

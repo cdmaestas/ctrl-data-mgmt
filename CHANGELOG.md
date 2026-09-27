@@ -12,6 +12,9 @@ commit. It becomes `0.1.0` when that is tagged.
 
 ### Upgrading
 
+- **Index schema 5** adds "not opened since it last changed" (`unopened_until`).
+  Added in place on first use; on macOS the next scan also recovers it for files
+  earlier cdm scans hashed. Restart a running `cdm mcp` afterwards.
 - **Index schema 4** adds last access time. The first read-write command adds
   the columns; nothing is lost. Access times fill in on the next scan, and only
   where they are trustworthy (see *Added*). Restart a running `cdm mcp` after
@@ -72,6 +75,12 @@ commit. It becomes `0.1.0` when that is tagged.
   `--order atime` use it, MCP `age_histogram` takes `by='atime'`, `suggest`
   judges age by the later of modified and last read, and `doctor` reports
   coverage. See `docs/adr/0005`.
+- "Never opened since it changed", recorded wherever the first read after a
+  change moves the access time (macOS APFS included) and always with the date
+  it was last known true, since cdm's own first read uses the evidence up on
+  macOS. `find --unopened`, `stat`, MCP `find(unopened=true)`, and `suggest`
+  marks installers and model stores "never opened (as of …)". The access-time
+  probe now tells three filesystem behaviours apart. See `docs/adr/0006`.
 - Man page `cdm(1)`, contributing guide, and version-controlled git hooks.
 - Release workflow: Trusted Publishing, TestPyPI and a smoke test before PyPI.
 

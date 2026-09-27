@@ -116,6 +116,7 @@ cdm find --name '*.csv' --larger-than 10M --order mtime
 cdm find --iname '*.pdf'            # case-insensitive; see the macOS note below
 cdm find --modified-after 7d --type file --quiet | xargs wc -l
 cdm find --accessed-before 180d --larger-than 1G   # big and not read in 6 months
+cdm find --unopened --larger-than 100M             # downloaded or changed, never opened
 cdm find --root ~/work --json
 ```
 
@@ -199,6 +200,26 @@ Where it is recorded, `stat` shows it, `find --accessed-before/--accessed-after`
 filters on it (an unknown never matches), the MCP `age_histogram` takes
 `by='atime'`, and `suggest` treats something read recently as in use. See
 [ADR 0005](docs/adr/0005-access-time-is-recorded-only-where-it-means-last-read.md).
+
+### Never opened since it changed
+
+Even where last read isn't available — macOS included — the first read after a
+change still moves the access time, so cdm can tell a file **not opened since
+it was downloaded or last written**: an installer never run, a model never
+loaded. `find --unopened` lists them, `stat` shows it, and `suggest` marks
+installers and model stores "never opened".
+
+It always comes with a date, because cdm's own first read uses the evidence up
+on macOS: "not opened between its last change and *this date*". On Linux, where
+cdm reads without touching access times, the date keeps up with each scan. For
+an index built before this existed, cdm recovers the answer on macOS from when
+its earlier scans read each file. See
+[ADR 0006](docs/adr/0006-never-opened-is-recorded-with-the-date-it-was-last-true.md).
+
+To check a filesystem cdm can't measure from your laptop — a Storage Scale or
+NFS mount, say — run a scan with `CDM_DATA_DIR` pointed at a directory on it,
+then `cdm doctor`: the probe measures the filesystem that holds the data
+directory.
 
 ## Hashing: two kinds, never confused
 
@@ -416,8 +437,8 @@ a tree hashed with nothing recording which half.
   Not implemented; recorded so the decisions that keep it cheap survive.
 - **[docs/adr/](docs/adr/)** — decision records: why names are opt-in over MCP
   (0002), why suggestions come from one advisory engine (0003), and why the
-  getting-started guide takes its status from the index (0004), and when an
-  access time is trusted (0005).
+  getting-started guide takes its status from the index (0004), when an access
+  time is trusted (0005), and how "never opened" is dated (0006).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — setup, and the list of choices that
   are deliberate rather than accidental.
 - **[docs/releasing.md](docs/releasing.md)** — how a release happens, and the

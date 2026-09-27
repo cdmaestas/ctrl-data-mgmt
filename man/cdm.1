@@ -84,7 +84,8 @@ Show the getting\-started checklist and what to do next. See
 .TP
 .BI "stat " path
 Print everything the index records about one path, including whether its hash
-has gone stale and, where it is trusted, when the file was last read. See
+has gone stale and, where they are known, when the file was last read and
+whether it has been opened since it last changed. See
 .BR "ACCESS TIMES" .
 .TP
 .B mcp
@@ -174,6 +175,10 @@ Filter on mtime.
 .BI \-\-accessed\-after " when" ", " \-\-accessed\-before " when"
 Filter on last access time. Files without a trusted access time never match
 either. See
+.BR "ACCESS TIMES" .
+.TP
+.B \-\-unopened
+Only files known not to have been opened since they last changed. See
 .BR "ACCESS TIMES" .
 .TP
 .BI \-\-root " path"
@@ -323,6 +328,26 @@ does the same. Directories are never given an access time, since scanning
 lists them.
 .B "cdm doctor"
 reports how many files have a trusted access time.
+.PP
+A narrower fact survives where last read does not: whether a file has been
+opened at all since it last changed. Wherever the first read after a change
+moves the access time \(em every filesystem above except
+.BR noatime ,
+read\-only ones and unmeasured macOS devices \(em
+.B cdm
+records that a file was not opened between its last change and a date, and
+always shows the date. On macOS its own first read uses the evidence up, so
+the date stops at that read; with
+.B O_NOATIME
+on Linux it advances with each scan. For an index built before this was
+recorded, on macOS the answer is recovered from when earlier hashing scans read
+each file.
+.PP
+To check a filesystem the probe cannot reach, such as a network or parallel
+filesystem, point
+.B CDM_DATA_DIR
+at a directory on it, scan, and run
+.BR "cdm doctor" .
 .SH NESTED ROOTS
 Roots may overlap, for example
 .I ~
@@ -700,7 +725,8 @@ Without it those paths are reported as unreadable and skipped, which is
 correct but means the index is incomplete for them.
 .PP
 Also on macOS, APFS updates a file's access time only on the first read after
-it changes, so access times there are recorded as unknown. See
+it changes, so last\-read times there are recorded as unknown and only
+\(lqnot opened since it changed\(rq is kept. See
 .BR "ACCESS TIMES" .
 On IBM Storage Scale, access\-time updates are set per filesystem with
 .B "mmchfs \-S"

@@ -70,7 +70,9 @@ NAME_TOOLS = {
     "find": "Search for files by name, size, modification time and last access "
             "time. Returns paths. Sizes like 100M or 2.5G; times like 7d, 24h or "
             "2026-08-01. accessed_before/after only match files with a trusted "
-            "access time.",
+            "access time. unopened=true lists files known not to have been opened "
+            "since they last changed (e.g. downloads never used); each result's "
+            "unopened_as_of says as of when.",
     "du": "Disk usage by subdirectory under a path, answered from the index. "
           "Returns directory paths.",
     "dupes": "Groups of files that share a hash. Returns paths. Partial-hash "
@@ -174,7 +176,9 @@ def _iso(epoch) -> str | None:
 def _file_row(r) -> dict[str, Any]:
     return {"path": r["path"], "type": r["type"], "bytes": r["size"],
             "size": shape.human(r["size"]), "modified": _iso(r["mtime"]),
-            "accessed": _iso(r["atime"])}
+            "accessed": _iso(r["atime"]),
+            # Not opened between its last change and this date; see ADR 0006.
+            "unopened_as_of": _iso(r["unopened_until"])}
 
 
 class Catalog:
@@ -298,8 +302,9 @@ class Catalog:
              kind: str | None = None, larger_than: str | None = None,
              smaller_than: str | None = None, modified_after: str | None = None,
              modified_before: str | None = None, accessed_after: str | None = None,
-             accessed_before: str | None = None, root: str | None = None,
-             order: str = "size", limit: int = 50) -> dict[str, Any]:
+             accessed_before: str | None = None, unopened: bool = False,
+             root: str | None = None, order: str = "size",
+             limit: int = 50) -> dict[str, Any]:
         if kind not in (None, "file", "dir", "link"):
             raise ValueError("kind must be file, dir or link")
         if order not in ("size", "mtime", "atime", "name", "path"):
@@ -319,6 +324,7 @@ class Catalog:
                                 if accessed_after else None),
                 accessed_before=(query.parse_when(accessed_before)
                                  if accessed_before else None),
+                unopened=bool(unopened),
                 order=order, limit=limit + 1)
         return _next({"results": [_file_row(r) for r in rows[:limit]],
                       "truncated": len(rows) > limit},
