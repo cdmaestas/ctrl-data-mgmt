@@ -394,7 +394,7 @@ so concurrency buys little and saturating shared storage costs a lot.
 
 Scans print a running count to stderr, but only when stderr is a terminal.
 
-Note that on a parallel filesystem — Spectrum Scale, Lustre — a POSIX walk is
+Note that on a parallel filesystem — Storage Scale, Lustre — a POSIX walk is
 the slow path by design; the native policy engine reads metadata far faster
 than `scandir` can at any thread count. See
 [docs/multi-host.md](docs/multi-host.md).
