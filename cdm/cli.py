@@ -284,6 +284,7 @@ def cmd_find(args, conn) -> int:
             accessed_after=query.parse_when(args.accessed_after) if args.accessed_after else None,
             accessed_before=(query.parse_when(args.accessed_before)
                              if args.accessed_before else None),
+            unopened=args.unopened,
             order=args.order,
             limit=args.limit,
         )
@@ -397,9 +398,15 @@ def cmd_suggest(args, conn) -> int:
             when = f", modified {item['newest'][:10]}" if item.get("newest") else ""
             if item.get("last_read"):
                 when += f", read {item['last_read'][:10]}"
+            if item.get("unopened"):
+                when += (f", never opened (as of {item['unopened_as_of'][:10]})"
+                         if item["files"] <= 1 else
+                         f", {item['unopened']:,} never opened (as of "
+                         f"{item['unopened_as_of'][:10]})")
+            facts = (f"{item['files']:,} files{when}" if item["files"] > 1
+                     else when.lstrip(", "))
             print(f"                     {item['size']:>7}  {item['path']}"
-                  f"  ({item['files']:,} files{when})" if item["files"] > 1 else
-                  f"                     {item['size']:>7}  {item['path']}")
+                  + (f"  ({facts})" if facts else ""))
             if item.get("action") and not s["action"]:
                 print(f"                              $ {item['action']}")
         if s["item_count"] > len(items):
@@ -413,6 +420,13 @@ def cmd_suggest(args, conn) -> int:
     _err(result["note"])
     return 0
 
+
+_MODE_MEANS = {
+    atime.LAST: "last read recorded, and files never opened since a change",
+    atime.FIRST: "files never opened since a change are recorded, dated; last "
+                 "read is not",
+    atime.NONE: "not recorded",
+}
 
 _MARK = {"done": "[x]", "todo": "[ ]", "advice": "[~]", "optional": "[?]"}
 
@@ -494,6 +508,9 @@ def cmd_stat(args, conn) -> int:
     elif row["type"] == "file":
         print("accessed  not recorded (the filesystem does not update access times, "
               "or it has not been read since cdm last hashed it)")
+    if row["unopened_until"] is not None:
+        print(f"opened    not since it last changed, as of "
+              f"{human_time(row['unopened_until'])}")
     print(f"created   {human_time(row['ctime'])}")
     print(f"inode     {row['inode']}")
     if row["hash"]:
@@ -544,13 +561,15 @@ def cmd_doctor(args) -> int:
         ).fetchone()[0]
         roots = conn.execute(
             "SELECT host, path, last_scan FROM roots ORDER BY path").fetchall()
-        regular, with_atime = conn.execute(
-            "SELECT COUNT(*), COUNT(atime) FROM files WHERE type = 'file'").fetchone()
+        regular, with_atime, unopened = conn.execute(
+            "SELECT COUNT(*), COUNT(atime), COUNT(unopened_until) FROM files "
+            "WHERE type = 'file'").fetchone()
 
     print(f"entries   {files}  ({hashed} hashed, {stale} stale)")
     if regular:
         print(f"atime     {with_atime} of {regular} files have a trusted last-access "
-              f"time ({with_atime / regular:.0%})")
+              f"time ({with_atime / regular:.0%}); {unopened} known not opened since "
+              f"they last changed")
     print(f"roots     {len(roots)}")
     # rc is NOT reset here: a permissions failure found above must survive to
     # the exit status, not be overwritten by a later clean check.
@@ -562,8 +581,8 @@ def cmd_doctor(args) -> int:
         print(f"  {r['path']}  last scan {r['last_scan'] or 'never'}{gone}")
         if not gone:
             # Why a root has access times or not, so 0% is explained, not silent.
-            ok, why = trust.check(r["path"], os.stat(r["path"]).st_dev)
-            print(f"    access times {'trusted' if ok else 'not recorded'}: {why}")
+            mode, why = trust.check(r["path"], os.stat(r["path"]).st_dev)
+            print(f"    access times: {_MODE_MEANS[mode]} ({why})")
     if stale:
         _err(f"cdm: {stale} hash(es) are stale; `cdm rescan --checksum` refreshes them")
     return rc
@@ -677,6 +696,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--accessed-after", metavar="WHEN",
                    help="last read after WHEN; files with no trusted access time never match")
     f.add_argument("--accessed-before", metavar="WHEN")
+    f.add_argument("--unopened", action="store_true",
+                   help="only files known not to have been opened since they last changed")
     f.add_argument("--root", metavar="PATH", help="restrict to one root (and roots nested in it)")
     f.add_argument("--order", choices=["size", "mtime", "atime", "name", "path"],
                    default="size")
