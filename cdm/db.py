@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import hashing, paths
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots (
@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS files (
     -- The atime cdm's own read left behind. While the file's atime still
     -- equals it, nobody else has read the file since, so `atime` stands.
     self_atime REAL,
+    -- Not opened between its last change and this time. NULL means opened
+    -- since, or unknown. Dated because cdm's own first read can use up the
+    -- evidence on some filesystems. See docs/adr/0006.
+    unopened_until REAL,
     PRIMARY KEY (host, path)
 );
 
@@ -170,7 +174,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # that is already there.
     existing = {r[1] for r in conn.execute("PRAGMA table_info(files)")}
     if existing:
-        for column in ("atime", "self_atime"):
+        for column in ("atime", "self_atime", "unopened_until"):
             if column not in existing:
                 conn.execute(f"ALTER TABLE files ADD COLUMN {column} REAL")
     conn.executescript(SCHEMA)
