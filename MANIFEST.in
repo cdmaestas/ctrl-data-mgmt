@@ -8,4 +8,5 @@ include man/*.1
 recursive-include docs *.md
 recursive-include docs/adr *.md
 include .githooks/*
+include scripts/*.py
 recursive-include tests *.py

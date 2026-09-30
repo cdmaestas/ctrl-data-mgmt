@@ -9,3 +9,10 @@ dist/
 .venv/
 venv/
 *.db
+
+# Raw cluster data never enters the repo; only sanitizer output does. See
+# tests/fixtures/README.md. Also enforced by scripts/check_raw_data.py in the
+# pre-commit hook and CI, because `git add -f` gets past this file.
+*.raw
+tests/fixtures/raw/
+*.cdm-export*

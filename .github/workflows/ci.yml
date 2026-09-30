@@ -39,6 +39,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # The pre-commit hook checks staged files, but `--no-verify` skips it;
+      # this checks everything tracked, so raw data cannot merge either way.
+      - name: No raw cluster data is tracked
+        run: python scripts/check_raw_data.py --all
+
       - name: Install with dev extras
         run: python -m pip install -e ".[dev]"
 
