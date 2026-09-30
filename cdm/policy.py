@@ -40,6 +40,8 @@ _SHOW = {"size": "VARCHAR(FILE_SIZE)", "mtime": "VARCHAR(MODIFICATION_TIME)",
          "uid": "VARCHAR(USER_ID)", "gid": "VARCHAR(GROUP_ID)", "mode": "MODE",
          "fileset": "FILESET_NAME", "pool": "POOL_NAME", "nlink": "VARCHAR(NLINK)"}
 END = "# end rows="
+# First line of a sanitized fixture; scripts/check_raw_data.py requires it there.
+SANITIZED = "# sanitized by cdm-sanitize v"
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 _NODES = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._,-]{0,1023}$")
@@ -229,6 +231,12 @@ def parse_entry(line: str) -> Entry:
 def read_header(lines) -> dict[str, str]:
     """The `# key: value` header. Consumes it from `lines`, an iterator."""
     first = next(lines, "").rstrip("\n")
+    sanitized = None
+    if first.startswith(SANITIZED):
+        # A test fixture from scripts/sanitize_listing.py: same format, with
+        # names replaced, and marked so it can never pass for real data.
+        sanitized = first[len(SANITIZED):]
+        first = next(lines, "").rstrip("\n")
     if first != f"# {FORMAT}":
         raise ListingError(f"not a {FORMAT} file (first line {first[:80]!r}); "
                            f"generate it with `cdm policy`")
@@ -240,6 +248,8 @@ def read_header(lines) -> dict[str, str]:
         header[key] = value
         if key == "generator":
             break
+    if sanitized is not None:
+        header["sanitized"] = sanitized
     for key in ("device", "cluster", "scope", "suppress_atime", "fields", "times"):
         if key not in header:
             raise ListingError(f"header has no {key!r}")

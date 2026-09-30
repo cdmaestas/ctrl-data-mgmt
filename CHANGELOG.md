@@ -72,6 +72,11 @@ commit. It becomes `0.1.0` when that is tagged.
   a header (cluster, scope, the `-S` atime setting, field order) and an end
   marker with the row count, is written mode 0600, and must be a `.raw` file.
   Names are validated, not escaped. Import follows in 0.2.0.
+- `scripts/sanitize_listing.py`: turns a raw `cdm policy` listing into a test
+  fixture that names nothing real -- placeholders for every path component,
+  renumbered IDs, generic cluster, filesystem, fileset and pool names -- and
+  refuses to write if any input name survives. A first fixture from a real
+  Storage Scale cluster is in `tests/fixtures/`.
 - Guards against committing raw cluster data, ahead of Storage Scale support:
   `.gitignore` entries for raw listings and export dumps, a required header on
   test fixtures, and `scripts/check_raw_data.py`, which the pre-commit hook runs
