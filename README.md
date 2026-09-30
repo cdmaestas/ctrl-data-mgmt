@@ -177,6 +177,24 @@ histories, duplicates, app caches). The rules are conservative on purpose:
 `--older-than 30d` changes the staleness threshold, `--root` narrows to one root,
 `--all` lists every path, and `--json` gives the same data the MCP tool returns.
 
+## IBM Storage Scale (in progress)
+
+On Storage Scale, walking directories is the slow path; the policy engine reads
+inode metadata directly. `cdm policy` prints a script for an administrator to
+review and run as root — cdm itself never runs it or needs root:
+
+```bash
+cdm policy --device fs1 --fileset proj > cdm-list.sh   # read it, then as root:
+sh cdm-list.sh                                          # writes fs1-proj.list.raw
+```
+
+The script runs one `LIST` rule with `mmapplypolicy -I defer`, which only reads
+metadata, and writes the listing (mode 0600) with a header and an end marker so
+a truncated listing is never mistaken for a complete one. It covers one
+fileset unless you pass `--whole-filesystem`, which warns that the index will
+then hold every user's file names. Reading listings into the index
+(`cdm import --policy`) is the next step on the [roadmap](docs/roadmap.md).
+
 ## Last access time
 
 cdm records when each file was last read — but only where that date means
