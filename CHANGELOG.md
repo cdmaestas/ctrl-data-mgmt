@@ -66,6 +66,12 @@ commit. It becomes `0.1.0` when that is tagged.
   `docs/adr/0004`. `cdm guide --schedule` prints a nightly rescan job (launchd
   or cron) to install yourself.
 - README: a Getting started section.
+- `cdm policy`: prints a script that lists an IBM Storage Scale fileset (or,
+  with `--whole-filesystem`, a whole filesystem) with `mmapplypolicy -I defer`,
+  for an administrator to run as root; cdm never runs it. The listing carries
+  a header (cluster, scope, the `-S` atime setting, field order) and an end
+  marker with the row count, is written mode 0600, and must be a `.raw` file.
+  Names are validated, not escaped. Import follows in 0.2.0.
 - Guards against committing raw cluster data, ahead of Storage Scale support:
   `.gitignore` entries for raw listings and export dumps, a required header on
   test fixtures, and `scripts/check_raw_data.py`, which the pre-commit hook runs

@@ -1,7 +1,7 @@
 """The command line.
 
-Verbs: scan, rescan, roots, forget, find, du, dupes, suggest, guide, stat, doctor,
-mcp.
+Verbs: scan, rescan, roots, forget, find, du, dupes, suggest, guide, policy, stat,
+doctor, mcp.
 
 Output goes to stdout as plain columns; anything the user did not ask for --
 skip counts, warnings, timings -- goes to stderr, so `cdm find ... | xargs` and
@@ -20,7 +20,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import atime, db, guide, hashing, paths, probe, query, roots, suggest
+from . import atime, db, guide, hashing, paths, policy, probe, query, roots, suggest
 from .exclude import Excluder
 from .scan import scan_root
 
@@ -428,6 +428,20 @@ def cmd_suggest(args, conn) -> int:
     return 0
 
 
+def cmd_policy(args) -> int:
+    """Print the listing script; cdm never runs mmapplypolicy itself."""
+    fileset = None if args.whole_filesystem else args.fileset
+    try:
+        text = policy.script(args.device, fileset, output=args.output,
+                             nodes=args.nodes, generator=f"cdm {__version__}")
+    except policy.PolicyError as exc:
+        _err(f"cdm: {exc}")
+        return 2
+    print(text, end="")
+    _err(policy.instructions(args.device, fileset, args.output))
+    return 0
+
+
 _MODE_MEANS = {
     atime.LAST: "last read recorded, and files never opened since a change",
     atime.FIRST: "files never opened since a change are recorded, dated; last "
@@ -741,6 +755,26 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print a nightly rescan job to install (launchd or cron)")
     w.add_argument("--json", action="store_true")
     w.set_defaults(func=cmd_guide)
+
+    o = sub.add_parser(
+        "policy", help="print a script that lists a Storage Scale fileset for import",
+        description="Print a script for an administrator to run as root: an "
+                    "mmapplypolicy LIST rule (-I defer, reads metadata only) whose "
+                    "output `cdm import --policy` reads. cdm never runs it.")
+    o.add_argument("--device", required=True, metavar="FS",
+                   help="the Storage Scale filesystem device name")
+    scope = o.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--fileset", metavar="NAME", help="list this fileset only")
+    scope.add_argument("--whole-filesystem", action="store_true",
+                       help="list every fileset: the index will hold every user's "
+                            "file names")
+    o.add_argument("--output", metavar="FILE.raw",
+                   help="where the script writes the listing (default "
+                        "DEVICE-FILESET.list.raw)")
+    o.add_argument("--nodes", metavar="NODES",
+                   help="passed to mmapplypolicy -N: nodes or node classes that "
+                        "share the scan")
+    o.set_defaults(func=cmd_policy)
 
     s = sub.add_parser("suggest", help="ranked things worth doing, with the command "
                                        "for each (changes nothing)")

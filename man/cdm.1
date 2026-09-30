@@ -81,6 +81,11 @@ List what is worth doing, ranked, with the command for each. Changes nothing.
 See
 .BR SUGGESTIONS .
 .TP
+.BI "policy " options
+Print a script that lists an IBM Storage Scale fileset with the policy engine,
+for an administrator to run. See
+.BR "STORAGE SCALE" .
+.TP
 .BI "guide " [ options ]
 Show the getting\-started checklist and what to do next. See
 .BR GUIDE .
@@ -474,6 +479,66 @@ launchctl bootstrap gui/$(id \-u) \e
 The same checklist the MCP
 .B guide
 tool returns.
+.SH STORAGE SCALE
+On IBM Storage Scale a directory walk is the slow path; the policy engine reads
+inode metadata directly.
+.B "cdm policy"
+prints a POSIX shell script for an administrator to review and run as root on a
+node that mounts the filesystem.
+.B cdm
+never runs it and never needs root. The script runs one
+.B LIST
+rule with
+.BR "mmapplypolicy \-I defer" ,
+which reads metadata and changes no files, and writes the listing with a header
+(filesystem, cluster, scope, the filesystem's
+.B \-S
+access\-time setting, field order) and an end marker with the row count, so a
+truncated listing can be told from a complete one. The listing is written mode
+0600 through a temporary file, so an interrupted run leaves nothing that looks
+whole.
+.PP
+The listing names every file it covers. Its name must end in
+.BR .raw ,
+which keeps it out of the repository (see
+.IR tests/fixtures/README.md );
+keep it private and delete it once imported. Reading it into the index,
+.BR "cdm import \-\-policy" ,
+is planned for 0.2.0 and not in this version.
+.TP
+.BI \-\-device " fs"
+The Storage Scale filesystem device name. Required.
+.TP
+.BI \-\-fileset " name"
+List one fileset. One of this or
+.B \-\-whole\-filesystem
+is required.
+.TP
+.B \-\-whole\-filesystem
+List every fileset. The index will then hold every user's file names, and the
+command says so.
+.TP
+.BI \-\-output " file" .raw
+Where the script writes the listing. Default
+.IB device \- fileset .list.raw
+or
+.IB device .list.raw ;
+the script also accepts it as its first argument.
+.TP
+.BI \-\-nodes " nodes"
+Passed to
+.B mmapplypolicy \-N
+to share the scan across nodes or node classes, such as
+.BR nsdNodes .
+.PP
+Device, fileset and node names must be plain Storage Scale names \(em letters,
+digits,
+.BR . ,
+.B _
+and
+.B \-
+\(em because they are written into a script run as root and into policy SQL;
+anything else is refused rather than escaped.
 .SH MCP SERVER
 .B "cdm mcp"
 lets an MCP client such as Claude Code or Claude Desktop answer plain\-language
