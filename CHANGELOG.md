@@ -66,6 +66,11 @@ commit. It becomes `0.1.0` when that is tagged.
   `docs/adr/0004`. `cdm guide --schedule` prints a nightly rescan job (launchd
   or cron) to install yourself.
 - README: a Getting started section.
+- Guards against committing raw cluster data, ahead of Storage Scale support:
+  `.gitignore` entries for raw listings and export dumps, a required header on
+  test fixtures, and `scripts/check_raw_data.py`, which the pre-commit hook runs
+  on staged content and CI runs on every tracked file. It also catches a raw
+  policy listing saved under an innocent name.
 - Last access time for files, recorded only where it means "last read": cdm
   measures its own data directory's filesystem and reads mount options
   elsewhere, and records an untrustworthy one (noatime, read-only, macOS APFS's

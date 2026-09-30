@@ -20,6 +20,13 @@ fi
 
 fail() { printf '\npre-commit: %s\n' "$1" >&2; exit 1; }
 
+# Before the import check below, on purpose: that one skips the remaining
+# checks when the dev environment is missing, and this one must never be
+# skipped. It needs only python3 and git.
+echo "pre-commit: no raw cluster data"
+"$python" scripts/check_raw_data.py --staged ||
+  fail "raw data staged; see tests/fixtures/README.md (git reset HEAD <file>)"
+
 if ! "$python" -c "import cdm" 2>/dev/null; then
   echo "pre-commit: cdm not importable by $python; skipping checks." >&2
   echo "            run 'pip install -e \".[dev]\"' to enable them." >&2

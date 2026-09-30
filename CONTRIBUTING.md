@@ -93,6 +93,13 @@ Change these only deliberately, and update the man page when you do:
   spends the evidence, so it means "not opened between its last change and this
   date", never "unused"; groups use their earliest date. See
   [docs/adr/0006](docs/adr/0006-never-opened-is-recorded-with-the-date-it-was-last-true.md).
+- **Raw cluster data never enters the repository.** Only sanitized fixtures,
+  carrying the `# sanitized by cdm-sanitize vN` header, go in `tests/fixtures/`.
+  `.gitignore` covers `*.raw`, `tests/fixtures/raw/` and `*.cdm-export*`;
+  `scripts/check_raw_data.py` backs it up where `.gitignore` can't, in the
+  pre-commit hook (staged content, before anything else and never skipped) and
+  in CI (everything tracked, so `--no-verify` doesn't get past it). See
+  [tests/fixtures/README.md](tests/fixtures/README.md).
 - **Every option of every verb is in the man page.** `tests/test_docs.py` fails
   otherwise, and the pre-commit hook lints the man page with `mandoc` when it is
   installed (it ships with macOS), as CI does on Linux.
