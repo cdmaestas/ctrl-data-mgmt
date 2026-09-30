@@ -99,7 +99,10 @@ Change these only deliberately, and update the man page when you do:
   `scripts/check_raw_data.py` backs it up where `.gitignore` can't, in the
   pre-commit hook (staged content, before anything else and never skipped) and
   in CI (everything tracked, so `--no-verify` doesn't get past it). See
-  [tests/fixtures/README.md](tests/fixtures/README.md).
+  [tests/fixtures/README.md](tests/fixtures/README.md). Fixtures come only from
+  `scripts/sanitize_listing.py`, run on the cluster; its leak check takes the
+  names to search for from the input, never from the code that replaced them
+  (a planted leak slipped through until they were separated).
 - **Every option of every verb is in the man page.** `tests/test_docs.py` fails
   otherwise, and the pre-commit hook lints the man page with `mandoc` when it is
   installed (it ships with macOS), as CI does on Linux.

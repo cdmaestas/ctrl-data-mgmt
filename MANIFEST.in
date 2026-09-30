@@ -10,3 +10,4 @@ recursive-include docs/adr *.md
 include .githooks/*
 include scripts/*.py
 recursive-include tests *.py
+recursive-include tests/fixtures *.list *.md
