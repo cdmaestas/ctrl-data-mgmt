@@ -1,7 +1,7 @@
 """The command line.
 
-Verbs: scan, rescan, import, roots, forget, find, du, dupes, storage, suggest, guide,
-policy, stat, doctor, mcp.
+Verbs: scan, rescan, import, hash, roots, forget, find, du, dupes, storage, suggest,
+guide, policy, stat, doctor, mcp.
 
 Output goes to stdout as plain columns; anything the user did not ask for --
 skip counts, warnings, timings -- goes to stderr, so `cdm find ... | xargs` and
@@ -24,6 +24,7 @@ from . import (
     atime,
     db,
     guide,
+    hasher,
     hashing,
     importer,
     paths,
@@ -471,6 +472,35 @@ def cmd_import(args, conn) -> int:
 
 
 @with_index
+def cmd_hash(args, conn) -> int:
+    root = str(Path(args.root).expanduser().resolve()) if args.root else None
+    kind = hashing.FULL if args.full else hashing.PARTIAL
+    try:
+        min_size = query.parse_size(args.min_size)
+    except ValueError as exc:
+        _err(f"cdm: {exc}")
+        return 2
+    stats = hasher.hash_files(conn, _visible(conn), root=root, fileset=args.fileset,
+                              kind=kind, min_size=min_size,
+                              progress=_progress_printer(args.progress))
+    _clear_progress()
+    _, bytes_per_sec = stats.rates()
+    _err(f"hashed {stats.hashed:,} of {stats.candidates:,} size-matched file(s) "
+         f"({human_size(stats.hashed_bytes)} read, {human_size(bytes_per_sec)}/s) "
+         f"in {stats.running_for:.1f}s")
+    if stats.elsewhere:
+        _err(f"  {stats.elsewhere:,} not on this machine: run `cdm hash` where they "
+             f"are mounted")
+    if stats.changed:
+        _err(f"  {stats.changed:,} changed since they were indexed: re-import or "
+             f"rescan, then hash again")
+    if stats.unreadable:
+        _err(f"  {len(stats.unreadable):,} unreadable, first: {stats.unreadable[0]}")
+        return 1
+    return 0
+
+
+@with_index
 def cmd_storage(args, conn) -> int:
     root = str(Path(args.root).expanduser().resolve()) if args.root else None
     # The person at the terminal owns the index, so names are shown here.
@@ -859,6 +889,22 @@ def build_parser() -> argparse.ArgumentParser:
                    help="log a timestamped rate line every SECS seconds (default 10) "
                         "even when stderr is not a terminal")
     i.set_defaults(func=cmd_import)
+
+    h = sub.add_parser(
+        "hash", help="hash files that could be duplicates (same size as another)",
+        description="Hash indexed files that share a size with another indexed file "
+                    "and have no valid hash -- typically an imported Storage Scale "
+                    "listing. Run it where the files are mounted. Resumable.")
+    h.add_argument("--root", metavar="PATH", help="only files under PATH")
+    h.add_argument("--fileset", metavar="NAME", help="only this Storage Scale fileset")
+    h.add_argument("--full", action="store_true",
+                   help="hash every byte (integrity) instead of both ends (dedupe)")
+    h.add_argument("--min-size", metavar="SIZE", default="1",
+                   help="skip files smaller than SIZE")
+    h.add_argument("--progress", nargs="?", type=float, const=10.0, metavar="SECS",
+                   help="log a timestamped rate line every SECS seconds (default 10) "
+                        "even when stderr is not a terminal")
+    h.set_defaults(func=cmd_hash)
 
     st = sub.add_parser(
         "storage", help="files and bytes by Storage Scale pool and fileset",

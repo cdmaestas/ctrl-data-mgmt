@@ -158,11 +158,13 @@ def test_an_old_import_is_re_imported_not_rescanned(conn, mixed):
     assert not any(s["id"] == f"index.unhashed:{ROOT}" for s in found)
 
 
-def test_an_import_only_index_does_not_point_at_a_rescan(conn):
+def test_an_import_only_index_points_at_cdm_hash_never_a_rescan(conn):
     importer.import_policy(conn, FIXTURE)
     g = guide.guide(conn, host=roots.visible_hosts(conn, LOCAL))
     step = next(s for s in g["steps"] if s["id"] == "hash")
-    assert step["status"] == guide.OPTIONAL and g["next"] != "hash"
+    assert step["status"] == guide.TODO and g["next"] == "hash"
+    assert step["command"] == f"cdm hash --root {ROOT}"
+    assert "rescan" not in step["command"]
 
 
 def test_mcp_tools_see_imported_listings(tmp_path):

@@ -89,6 +89,13 @@ commit. It becomes `0.1.0` when that is tagged.
   `relatime` and `no` give each file's last read and "never opened since it
   changed" (dated to the listing); `yes` and unrecognised values give unknown.
   `doctor` shows the setting for each imported root.
+- `cdm hash`: hashes indexed files that share a size with another -- the only
+  ones that can be duplicates -- and have no valid hash, typically an imported
+  Storage Scale listing; run where the files are mounted. Resumable, scoped by
+  `--root`, `--fileset` and `--min-size`, partial or `--full`. Files that
+  changed since they were indexed are reported, not hashed. Its own reads are
+  discounted: the next import keeps the earlier last read. The guide and
+  `suggest` point imported roots at it.
 - `cdm storage` and the MCP `storage` tool: files and bytes by Storage Scale
   storage pool and fileset; `find --fileset` / `--pool` and the same filters on
   MCP `find`; `stat` shows both. Over MCP, pools are named by default and

@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import hasher
 from . import roots as roots_mod
 from . import suggest as suggest_mod
 from .shape import DAY, human
@@ -89,34 +90,40 @@ def guide(conn, *, host, root: str | None = None, now: float | None = None,
         ", ".join(r["path"] for r in roots)))
 
     # 2. Hash it, or duplicates and most suggestions cannot be found.
-    # Imported roots are hashed by `cdm hash` (0.2.0), not by a rescan, so
-    # only scanned roots are judged here; a rescan cannot help the others.
-    scanned = [r for r in roots if r["source"] != roots_mod.POLICY]
-    thin = []
+    # Scanned roots hash as they are scanned (--checksum), judged by the share
+    # hashed. Imported roots are hashed afterwards by `cdm hash`, which reads
+    # only files whose size matches another's, so they are judged by whether
+    # any of those are still unhashed.
+    thin = []                 # (path, command) for the first root needing work
     total_files = total_hashed = 0
-    for r in scanned:
+    pending = 0
+    for r in roots:
+        if r["source"] == roots_mod.POLICY:
+            n = hasher.candidates(conn, host, root=r["path"])
+            pending += n
+            if n:
+                thin.append(f"cdm hash --root {shlex.quote(r['path'])}")
+            continue
         files, hashed = _coverage(conn, r["host"], r["path"])
         total_files += files
         total_hashed += hashed
         if files and hashed / files < MIN_COVERAGE:
-            thin.append(r["path"])
-    share = f"{total_hashed / total_files:.0%} of files hashed" if total_files else ""
-    if len(scanned) < len(roots):
-        share = (share + "; " if share else "") + \
-            "imported listings are hashed separately (cdm hash, in 0.2.0)"
+            thin.append(f"cdm rescan --checksum {shlex.quote(r['path'])}")
+    facts = []
+    if total_files:
+        facts.append(f"{total_hashed / total_files:.0%} of scanned files hashed")
+    if pending:
+        facts.append(f"{pending:,} imported file(s) could be duplicates and are unhashed")
     steps.append(Step(
         "hash", "Hash it for duplicates",
-        # With only imported listings there is nothing to run yet, so the step
-        # is optional and never "next": pointing at a rescan would be wrong.
-        TODO if not roots or thin else (DONE if scanned else OPTIONAL),
-        "A file that was never hashed cannot show up as a duplicate. --checksum "
-        "reads only both ends of each file, and unchanged files are never "
-        "read again.",
-        f"cdm rescan --checksum {shlex.quote(thin[0])}" if thin
-        else "cdm rescan --checksum",
-        "'hashed N (… read, …/s), reused M unchanged'. On a rescan, nearly "
-        "everything is reused.",
-        share))
+        TODO if not roots or thin else DONE,
+        "A file that was never hashed cannot show up as a duplicate. A scan "
+        "hashes with --checksum; an imported Storage Scale listing is hashed "
+        "with `cdm hash` where it is mounted, which reads only files whose size "
+        "matches another's.",
+        thin[0] if thin else "cdm rescan --checksum",
+        "'hashed N ... read, ...'. Nearly everything is reused on a second run.",
+        "; ".join(facts)))
 
     # 3. Look at what is worth doing. Observable only as "is there anything".
     found = suggest_mod.suggest(conn, host=host, root=root, names=False, now=now,
