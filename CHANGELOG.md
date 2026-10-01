@@ -12,6 +12,9 @@ commit. It becomes `0.1.0` when that is tagged.
 
 ### Upgrading
 
+- **Index schema 6** records each root's source (`scan` or an imported
+  `policy` listing). Added in place on first use; existing roots count as scans.
+  Restart a running `cdm mcp` afterwards.
 - **Index schema 5** adds "not opened since it last changed" (`unopened_until`).
   Added in place on first use; on macOS the next scan also recovers it for files
   earlier cdm scans hashed. Restart a running `cdm mcp` afterwards.
@@ -66,6 +69,14 @@ commit. It becomes `0.1.0` when that is tagged.
   `docs/adr/0004`. `cdm guide --schedule` prints a nightly rescan job (launchd
   or cron) to install yourself.
 - README: a Getting started section.
+- `cdm import --policy FILE`: loads a `cdm policy` listing into the index under
+  a logical host, `<filesystem>@<cluster>`. It proves the listing complete
+  before writing anything and writes in one transaction, so a truncated or
+  damaged listing leaves the index untouched. Imported listings are visible to
+  every command and MCP tool alongside this machine's scans; `--all-hosts`
+  still adds other machines' rows. `roots` marks imported listings, `forget`
+  removes them, and `suggest` and `guide` advise re-importing rather than
+  rescanning them.
 - `cdm policy`: prints a script that lists an IBM Storage Scale fileset (or,
   with `--whole-filesystem`, a whole filesystem) with `mmapplypolicy -I defer`,
   for an administrator to run as root; cdm never runs it. The listing carries

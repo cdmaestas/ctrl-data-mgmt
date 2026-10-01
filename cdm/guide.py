@@ -52,14 +52,15 @@ class Step:
     detail: str = ""
 
 
-def _roots(conn, host: str, root: str | None):
-    where, params = "host = ?", [host]
+def _roots(conn, host, root: str | None):
+    """Roots on `host` -- one name, or this machine plus imported listings."""
+    where, params = roots_mod.host_sql(host)
     if root is not None:
         where += " AND " + roots_mod.scope_sql("path")
         params += roots_mod.scope_params(root)
     return conn.execute(
-        f"SELECT path, last_scan FROM roots WHERE {where} ORDER BY path", params
-    ).fetchall()
+        f"SELECT host, path, last_scan, source FROM roots WHERE {where} ORDER BY path",
+        params).fetchall()
 
 
 def _coverage(conn, host: str, path: str) -> tuple[int, int]:
@@ -70,7 +71,7 @@ def _coverage(conn, host: str, path: str) -> tuple[int, int]:
     return r[0], r[1]
 
 
-def guide(conn, *, host: str, root: str | None = None, now: float | None = None,
+def guide(conn, *, host, root: str | None = None, now: float | None = None,
           fresh_days: int = FRESH_DAYS) -> dict:
     """The steps, each with a status observed from the index, and which is next."""
     now = time.time() if now is None else now
@@ -88,18 +89,26 @@ def guide(conn, *, host: str, root: str | None = None, now: float | None = None,
         ", ".join(r["path"] for r in roots)))
 
     # 2. Hash it, or duplicates and most suggestions cannot be found.
+    # Imported roots are hashed by `cdm hash` (0.2.0), not by a rescan, so
+    # only scanned roots are judged here; a rescan cannot help the others.
+    scanned = [r for r in roots if r["source"] != roots_mod.POLICY]
     thin = []
     total_files = total_hashed = 0
-    for r in roots:
-        files, hashed = _coverage(conn, host, r["path"])
+    for r in scanned:
+        files, hashed = _coverage(conn, r["host"], r["path"])
         total_files += files
         total_hashed += hashed
         if files and hashed / files < MIN_COVERAGE:
             thin.append(r["path"])
     share = f"{total_hashed / total_files:.0%} of files hashed" if total_files else ""
+    if len(scanned) < len(roots):
+        share = (share + "; " if share else "") + \
+            "imported listings are hashed separately (cdm hash, in 0.2.0)"
     steps.append(Step(
         "hash", "Hash it for duplicates",
-        TODO if not roots or thin else DONE,
+        # With only imported listings there is nothing to run yet, so the step
+        # is optional and never "next": pointing at a rescan would be wrong.
+        TODO if not roots or thin else (DONE if scanned else OPTIONAL),
         "A file that was never hashed cannot show up as a duplicate. --checksum "
         "reads only both ends of each file, and unchanged files are never "
         "read again.",

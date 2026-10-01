@@ -50,12 +50,14 @@ _EXTENSION = re.compile(r"^[a-z0-9]{1,8}$")
 MIN_EXTENSION_FILES = 2
 
 
-def _scope(host: str | None, root: str | None, *, table: str = "") -> tuple[str, list]:
+def _scope(host, root: str | None, *, table: str = "") -> tuple[str, list]:
+    """`host` is one name, several (roots.visible_hosts), or None for all."""
     prefix = f"{table}." if table else ""
     clauses, params = [], []
     if host is not None:
-        clauses.append(f"{prefix}host = ?")
-        params.append(host)
+        sql, values = roots_mod.host_sql(host, f"{prefix}host")
+        clauses.append(sql)
+        params.extend(values)
     if root is not None:
         # The root and every root nested inside it: see roots.py.
         clauses.append(roots_mod.scope_sql(f"{prefix}root"))

@@ -1,7 +1,7 @@
 """The command line.
 
-Verbs: scan, rescan, roots, forget, find, du, dupes, suggest, guide, policy, stat,
-doctor, mcp.
+Verbs: scan, rescan, import, roots, forget, find, du, dupes, suggest, guide, policy,
+stat, doctor, mcp.
 
 Output goes to stdout as plain columns; anything the user did not ask for --
 skip counts, warnings, timings -- goes to stderr, so `cdm find ... | xargs` and
@@ -20,7 +20,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import atime, db, guide, hashing, paths, policy, probe, query, roots, suggest
+from . import atime, db, guide, hashing, importer, paths, policy, probe, query, roots, suggest
 from .exclude import Excluder
 from .scan import scan_root
 
@@ -44,6 +44,11 @@ def with_index(fn):
         with closing(db.connect()) as conn:
             return fn(args, conn)
     return wrapper
+
+
+def _visible(conn) -> tuple[str, ...]:
+    """What a question covers: this machine plus imported listings (roots.py)."""
+    return roots.visible_hosts(conn, paths.this_host())
 
 
 def human_size(n: int) -> str:
@@ -251,7 +256,7 @@ def cmd_rescan(args, conn) -> int:
 @with_index
 def cmd_roots(args, conn) -> int:
     rows = conn.execute(
-        "SELECT r.host, r.path, r.added_at, r.last_scan, "
+        "SELECT r.host, r.path, r.added_at, r.last_scan, r.source, "
         "       (SELECT COUNT(*) FROM files f "
         "         WHERE f.host = r.host AND f.root = r.path) AS n "
         "FROM roots r ORDER BY r.host, r.path"
@@ -264,8 +269,12 @@ def cmd_roots(args, conn) -> int:
         # leaves out whatever a root nested in it owns.
         outer = roots.enclosing(conn, r["host"], r["path"])
         inside = f"  (inside {outer})" if outer else ""
-        print(f"{r['path']}  ({r['host']})  {r['n']} entries  "
-              f"last scan {r['last_scan'] or 'never'}{inside}")
+        if r["source"] == roots.POLICY:
+            print(f"{r['path']}  ({r['host']}, imported listing)  {r['n']} entries  "
+                  f"imported {r['last_scan'] or 'never'}{inside}")
+        else:
+            print(f"{r['path']}  ({r['host']})  {r['n']} entries  "
+                  f"last scan {r['last_scan'] or 'never'}{inside}")
     return 0
 
 
@@ -274,7 +283,7 @@ def cmd_find(args, conn) -> int:
     try:
         rows = query.find(
             conn,
-            host=None if args.all_hosts else paths.this_host(),
+            host=None if args.all_hosts else _visible(conn),
             root=args.root,
             name=args.name,
             iname=args.iname,
@@ -306,7 +315,7 @@ def cmd_dupes(args, conn) -> int:
         _err(f"cdm: {exc}")
         return 2
 
-    groups = query.dupe_groups(conn, host=None if args.all_hosts else paths.this_host(),
+    groups = query.dupe_groups(conn, host=None if args.all_hosts else _visible(conn),
                                min_size=min_size, limit=args.limit)
     if not groups:
         _err("no duplicate candidates. Did you scan with --checksum?")
@@ -352,7 +361,7 @@ def cmd_dupes(args, conn) -> int:
 @with_index
 def cmd_du(args, conn) -> int:
     rows = query.disk_usage(conn, args.path, depth=args.depth,
-                            host=None if args.all_hosts else paths.this_host(),
+                            host=None if args.all_hosts else _visible(conn),
                             limit=args.limit)
     if not rows:
         _err(f"cdm: nothing indexed under {args.path}. Scan it first.")
@@ -383,7 +392,7 @@ def _days(text: str) -> int:
 @with_index
 def cmd_suggest(args, conn) -> int:
     root = str(Path(args.root).expanduser().resolve()) if args.root else None
-    result = suggest.suggest(conn, host=paths.this_host(), root=root,
+    result = suggest.suggest(conn, host=_visible(conn), root=root,
                              older_than_days=args.older_than, limit=args.limit,
                              max_items=10 ** 6 if args.all else args.items)
     if args.json:
@@ -428,6 +437,22 @@ def cmd_suggest(args, conn) -> int:
     return 0
 
 
+@with_index
+def cmd_import(args, conn) -> int:
+    try:
+        stats = importer.import_policy(conn, args.policy, root=args.root,
+                                       progress=_progress_printer(args.progress))
+    except (OSError, policy.ListingError) as exc:
+        _clear_progress()
+        _err(f"cdm: {exc}")
+        return 1
+    _clear_progress()
+    per_sec, _ = stats.rates()
+    _err(f"{stats.root} ({stats.host}): imported {stats.files} files, {stats.dirs} "
+         f"dirs, {stats.links} links in {stats.elapsed:.1f}s ({per_sec:,.0f} entries/s)")
+    return 0
+
+
 def cmd_policy(args) -> int:
     """Print the listing script; cdm never runs mmapplypolicy itself."""
     fileset = None if args.whole_filesystem else args.fileset
@@ -465,7 +490,7 @@ def cmd_guide(args) -> int:
 
 @with_index
 def _show_guide(args, conn) -> int:
-    result = guide.guide(conn, host=paths.this_host())
+    result = guide.guide(conn, host=_visible(conn))
     if args.json:
         print(json.dumps(result, indent=2))
         return 0
@@ -491,7 +516,12 @@ def _show_guide(args, conn) -> int:
 
 @with_index
 def cmd_forget(args, conn) -> int:
-    host = paths.this_host()
+    # The root may be this machine's or an imported listing's: find its host.
+    key = str(Path(args.path).expanduser().resolve())
+    where, params = roots.host_sql(_visible(conn))
+    owners = [r[0] for r in conn.execute(
+        f"SELECT host FROM roots WHERE path = ? AND {where}", (key, *params))]
+    host = owners[0] if len(owners) == 1 else paths.this_host()
     out = query.forget_root(conn, args.path, host)
     if not out.known:
         _err(f"cdm: not a known root: {args.path}")
@@ -511,7 +541,7 @@ def cmd_forget(args, conn) -> int:
 
 @with_index
 def cmd_stat(args, conn) -> int:
-    row = query.stat_one(conn, args.path, host=paths.this_host())
+    row = query.stat_one(conn, args.path, host=_visible(conn))
     if row is None:
         _err(f"cdm: not in the index: {args.path}")
         return 1
@@ -580,8 +610,8 @@ def cmd_doctor(args) -> int:
             "SELECT COUNT(*) FROM files WHERE hash IS NOT NULL "
             "AND (hash_size != size OR hash_mtime != mtime)"
         ).fetchone()[0]
-        roots = conn.execute(
-            "SELECT host, path, last_scan FROM roots ORDER BY path").fetchall()
+        root_rows = conn.execute(
+            "SELECT host, path, last_scan, source FROM roots ORDER BY path").fetchall()
         regular, with_atime, unopened = conn.execute(
             "SELECT COUNT(*), COUNT(atime), COUNT(unopened_until) FROM files "
             "WHERE type = 'file'").fetchone()
@@ -591,14 +621,20 @@ def cmd_doctor(args) -> int:
         print(f"atime     {with_atime} of {regular} files have a trusted last-access "
               f"time ({with_atime / regular:.0%}); {unopened} known not opened since "
               f"they last changed")
-    print(f"roots     {len(roots)}")
+    print(f"roots     {len(root_rows)}")
     # rc is NOT reset here: a permissions failure found above must survive to
     # the exit status, not be overwritten by a later clean check.
     trust = None
-    if roots:
+    if root_rows:
         measured, unmeasured = atime.measure(paths.data_dir())
         trust = atime.Trust(measured=measured, unmeasured=unmeasured)
-    for r in roots:
+    for r in root_rows:
+        if r["source"] == roots.POLICY:
+            # An imported listing describes another machine's filesystem; it is
+            # not on this disk, and that is not a fault.
+            print(f"  {r['path']}  imported listing ({r['host']}) "
+                  f"{r['last_scan'] or 'never'}")
+            continue
         gone = "" if Path(r["path"]).is_dir() else "   <- gone from disk"
         if gone:
             rc = 1
@@ -755,6 +791,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print a nightly rescan job to install (launchd or cron)")
     w.add_argument("--json", action="store_true")
     w.set_defaults(func=cmd_guide)
+
+    i = sub.add_parser(
+        "import", help="load a Storage Scale policy listing into the index",
+        description="Load a listing written by the script `cdm policy` prints. It "
+                    "must be complete -- header and end marker intact -- or nothing "
+                    "is imported.")
+    i.add_argument("--policy", required=True, metavar="FILE.raw",
+                   help="the listing the `cdm policy` script wrote")
+    i.add_argument("--root", metavar="PATH",
+                   help="the root to record it under (default: the directory "
+                        "every listed path shares, e.g. the fileset's junction)")
+    i.add_argument("--progress", nargs="?", type=float, const=10.0, metavar="SECS",
+                   help="log a timestamped rate line every SECS seconds (default 10) "
+                        "even when stderr is not a terminal")
+    i.set_defaults(func=cmd_import)
 
     o = sub.add_parser(
         "policy", help="print a script that lists a Storage Scale fileset for import",

@@ -59,8 +59,10 @@ def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
     # though the filesystem itself treats those names as interchangeable.
     # lower() rather than a collation, because GLOB ignores COLLATE.
     root_key = str(Path(root).expanduser().resolve()) if root else None
+    host_clause, host_params = roots.host_sql(host)
     specs = (
-        ("host = ?", host),
+        # One host, several (this machine plus imported listings), or all.
+        (host_clause, host_params if host is not None else None),
         # Everything under the root, including rows owned by roots nested in it.
         (roots.scope_sql(), roots.scope_params(root_key) if root_key else None),
         ("name GLOB ?", name),
@@ -99,11 +101,9 @@ def dupe_groups(conn, *, host=None, min_size=1, limit=100):
     full one. Zero-length files are excluded by default: they all match, and
     saying so is noise rather than a finding.
     """
-    clauses = ["hash IS NOT NULL", "size >= ?"]
-    params: list = [min_size]
-    if host:
-        clauses.append("host = ?")
-        params.append(host)
+    host_clause, host_params = roots.host_sql(host or None)
+    clauses = ["hash IS NOT NULL", "size >= ?", host_clause]
+    params: list = [min_size, *host_params]
 
     sql = (
         f"SELECT hash, hash_kind, size, COUNT(*) AS n "
@@ -116,9 +116,9 @@ def dupe_groups(conn, *, host=None, min_size=1, limit=100):
     out = []
     for g in groups:
         members = conn.execute(
-            "SELECT * FROM files WHERE hash = ? AND hash_kind = ? AND size = ? "
-            "ORDER BY path",
-            (g["hash"], g["hash_kind"], g["size"]),
+            f"SELECT * FROM files WHERE hash = ? AND hash_kind = ? AND size = ? "
+            f"AND {host_clause} ORDER BY path",
+            (g["hash"], g["hash_kind"], g["size"], *host_params),
         ).fetchall()
         out.append({"hash": g["hash"], "hash_kind": g["hash_kind"],
                     "size": g["size"], "count": g["n"],
@@ -190,11 +190,9 @@ def disk_usage(conn, under: str, *, depth: int = 1, host=None, limit: int = 40):
     """
     base = Path(under).expanduser().resolve()
     prefix = str(base).rstrip("/") + "/"
-    clauses = ["type = 'file'", "path LIKE ? ESCAPE '\\'"]
-    params: list = [_like_prefix(prefix)]
-    if host:
-        clauses.append("host = ?")
-        params.append(host)
+    host_clause, host_params = roots.host_sql(host or None)
+    clauses = ["type = 'file'", "path LIKE ? ESCAPE '\\'", host_clause]
+    params: list = [_like_prefix(prefix), *host_params]
 
     sql = f"SELECT path, size FROM files WHERE {' AND '.join(clauses)}"
     totals: dict[str, list[int]] = {}
@@ -264,10 +262,9 @@ def forget_root(conn, path: str, host: str) -> Forgotten:
 
 
 def stat_one(conn, path: str, host=None):
-    clauses, params = ["path = ?"], [str(Path(path).expanduser().resolve())]
-    if host:
-        clauses.append("host = ?")
-        params.append(host)
+    host_clause, host_params = roots.host_sql(host or None)
+    clauses = ["path = ?", host_clause]
+    params = [str(Path(path).expanduser().resolve()), *host_params]
     sql = f"SELECT * FROM files WHERE {' AND '.join(clauses)}"
     return conn.execute(sql, params).fetchone()
 

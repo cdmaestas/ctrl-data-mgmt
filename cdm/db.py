@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import hashing, paths
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots (
@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS roots (
     path       TEXT NOT NULL,
     added_at   TEXT NOT NULL,
     last_scan  TEXT,
+    -- How the root's rows arrive: 'scan' (NULL in older indexes) or 'policy'
+    -- (`cdm import --policy`). Imported roots live under a logical host,
+    -- <filesystem>@<cluster>, and are visible alongside this machine's own.
+    source     TEXT,
     PRIMARY KEY (host, path)
 );
 
@@ -172,11 +176,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Columns added after schema 3 must exist before SCHEMA runs, because it
     # indexes them; CREATE TABLE IF NOT EXISTS does not add columns to a table
     # that is already there.
-    existing = {r[1] for r in conn.execute("PRAGMA table_info(files)")}
-    if existing:
-        for column in ("atime", "self_atime", "unopened_until"):
+    for table, columns in (("files", ("atime", "self_atime", "unopened_until")),
+                           ("roots", ("source",))):
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        kind = "REAL" if table == "files" else "TEXT"
+        for column in columns if existing else ():
             if column not in existing:
-                conn.execute(f"ALTER TABLE files ADD COLUMN {column} REAL")
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
     conn.executescript(SCHEMA)
     if 0 < version < 3:
         # Before schema 3, a partial hash of a file between one and two windows

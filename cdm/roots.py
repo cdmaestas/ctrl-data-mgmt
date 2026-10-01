@@ -69,3 +69,32 @@ def scope_sql(column: str = "root") -> str:
 
 def scope_params(root_key: str) -> list[str]:
     return [root_key, *bounds(root_key)]
+
+
+# --- which hosts a question covers -------------------------------------------
+#
+# Rows are keyed by (host, path). This machine's scans use its hostname; an
+# imported Storage Scale listing uses a logical host, <filesystem>@<cluster>,
+# so listings taken from any node line up. Both belong to "this index" as far
+# as a question is concerned, so reads cover this machine plus every imported
+# host. Rows merged from other machines' dumps (#13) stay out unless asked for.
+
+POLICY = "policy"
+
+
+def visible_hosts(conn, host: str) -> tuple[str, ...]:
+    """This machine's host, then every host that holds an imported listing."""
+    imported = [r[0] for r in conn.execute(
+        "SELECT DISTINCT host FROM roots WHERE source = ? AND host != ? ORDER BY host",
+        (POLICY, host))]
+    return (host, *imported)
+
+
+def host_sql(hosts, column: str = "host") -> tuple[str, list]:
+    """SQL and parameters for a host filter: one name, several, or None for all."""
+    if hosts is None:
+        return "1=1", []
+    if isinstance(hosts, str):
+        return f"{column} = ?", [hosts]
+    hosts = list(hosts)
+    return f"{column} IN ({','.join('?' * len(hosts))})", hosts
