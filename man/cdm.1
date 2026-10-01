@@ -568,10 +568,18 @@ imported listing. Every command \(em
 and the MCP tools \(em covers this machine's scans and every imported listing
 together;
 .B \-\-all\-hosts
-adds rows from other machines. A re\-import updates rows and keeps a file's hash
-while its size and modification time are unchanged. In this version it does
-not yet remove rows for files that are gone, record access times, store fileset
-and pool, or hash; those follow in 0.2.0.
+adds rows from other machines.
+.PP
+An import is a snapshot of what its listing covers: rows the listing no longer
+contains are removed, which is safe only because the listing was first proved
+complete. A fileset listing covers only its own fileset, even under its
+junction, so re\-importing a fileset never removes a nested fileset's rows; a
+whole\-filesystem listing covers everything under its root. A complete listing
+that is empty removes everything under the root, so it needs an explicit
+.BR \-\-root .
+Rows are updated in place, and a file keeps its hash while its size and
+modification time are unchanged. The fileset and storage pool of each file are
+recorded. Access times and hashing for imported files follow in 0.2.0.
 .TP
 .BI \-\-policy " file" .raw
 The listing. Required.

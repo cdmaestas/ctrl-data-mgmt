@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import hashing, paths
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots (
@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS files (
     -- since, or unknown. Dated because cdm's own first read can use up the
     -- evidence on some filesystems. See docs/adr/0006.
     unopened_until REAL,
+    -- Storage Scale fileset and storage pool, from an imported listing; NULL
+    -- for scanned rows. A fileset listing covers only its own fileset, even
+    -- under its junction, so re-importing it may remove only that fileset's
+    -- rows (importer.py).
+    fileset    TEXT,
+    pool       TEXT,
     PRIMARY KEY (host, path)
 );
 
@@ -176,11 +182,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Columns added after schema 3 must exist before SCHEMA runs, because it
     # indexes them; CREATE TABLE IF NOT EXISTS does not add columns to a table
     # that is already there.
-    for table, columns in (("files", ("atime", "self_atime", "unopened_until")),
-                           ("roots", ("source",))):
+    for table, columns in (("files", (("atime", "REAL"), ("self_atime", "REAL"),
+                                      ("unopened_until", "REAL"), ("fileset", "TEXT"),
+                                      ("pool", "TEXT"))),
+                           ("roots", (("source", "TEXT"),))):
         existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-        kind = "REAL" if table == "files" else "TEXT"
-        for column in columns if existing else ():
+        for column, kind in columns if existing else ():
             if column not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
     conn.executescript(SCHEMA)

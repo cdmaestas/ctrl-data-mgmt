@@ -227,3 +227,118 @@ def test_doctor_does_not_call_an_imported_root_gone(tmp_path, monkeypatch, capsy
     assert cli.main(["doctor"]) == 0
     out = capsys.readouterr().out
     assert "imported listing" in out and "gone from disk" not in out
+
+
+# --- #9: an import is a snapshot of what it covers ----------------------------------
+
+def scoped(scope, *rows):
+    head = [h.replace("# scope: fileset proj", f"# scope: {scope}") for h in HEADER]
+    return head + list(rows) + [f"{policy.END}{len(rows)}\n"]
+
+
+P = "/gpfs/fs1/proj"
+
+
+def paths_of(conn, host=IMPORTED):
+    return {r[0] for r in conn.execute("SELECT path FROM files WHERE host = ?", (host,))}
+
+
+def test_a_re_import_removes_what_the_listing_no_longer_has(conn, tmp_path):
+    first = scoped("fileset proj", line(P, mode="drwxr-xr-x"), line(f"{P}/a"),
+                   line(f"{P}/b"), line(f"{P}/d", mode="drwxr-xr-x"), line(f"{P}/d/c"))
+    importer.import_policy(conn, write(tmp_path, first, "1.raw"))
+    second = scoped("fileset proj", line(P, mode="drwxr-xr-x"), line(f"{P}/a"))
+    stats = importer.import_policy(conn, write(tmp_path, second, "2.raw"))
+    assert stats.pruned == 3 and paths_of(conn) == {f"{P}/a"}
+
+
+def test_fileset_and_pool_are_stored(conn, tmp_path):
+    importer.import_policy(conn, write(tmp_path, scoped(
+        "fileset proj", line(f"{P}/a", pool="data1"))))
+    r = conn.execute("SELECT fileset, pool FROM files").fetchone()
+    assert (r["fileset"], r["pool"]) == ("proj", "data1")
+
+
+def test_re_importing_a_fileset_leaves_a_nested_fileset_alone(conn, tmp_path):
+    """A FOR FILESET listing omits other filesets linked under its junction.
+
+    The child fileset's rows come from a whole-filesystem import; re-importing
+    `proj` without them must not take them as deleted.
+    """
+    whole = scoped("filesystem",
+                   line(f"{P}/a"), line(f"{P}/gone"),
+                   line(f"{P}/child", mode="drwxr-xr-x", fileset="child"),
+                   line(f"{P}/child/x", fileset="child"))
+    importer.import_policy(conn, write(tmp_path, whole, "whole.raw"), root="/gpfs/fs1")
+    importer.import_policy(conn, write(tmp_path, scoped("fileset proj", line(f"{P}/a")),
+                                       "proj.raw"), root=P)
+    left = paths_of(conn)
+    assert f"{P}/child/x" in left and f"{P}/child" in left, "a nested fileset was pruned"
+    assert f"{P}/gone" not in left and f"{P}/a" in left
+
+
+def test_a_whole_filesystem_re_import_prunes_across_filesets(conn, tmp_path):
+    importer.import_policy(conn, write(tmp_path, scoped(
+        "filesystem", line(f"{P}/a"), line(f"{P}/child/x", fileset="child")), "1.raw"),
+        root="/gpfs/fs1")
+    stats = importer.import_policy(conn, write(tmp_path, scoped(
+        "filesystem", line(f"{P}/a")), "2.raw"), root="/gpfs/fs1")
+    assert stats.pruned == 1 and paths_of(conn) == {f"{P}/a"}
+
+
+def test_other_hosts_and_other_roots_are_untouched(conn, tmp_path, mixed):
+    before_local = paths_of(conn, LOCAL)
+    importer.import_policy(conn, write(tmp_path, scoped("fileset fileset1"), "e.raw"),
+                           root=ROOT)
+    assert paths_of(conn, LOCAL) == before_local
+    assert paths_of(conn, "other-box") == {"/r/secret"}
+
+
+def test_rows_without_a_fileset_are_removed_only_by_their_own_root(conn, tmp_path):
+    """Rows an older import stored with no fileset: no guessing whose they are."""
+    rows = [(IMPORTED, P, f"{P}/old-mine"), (IMPORTED, "/gpfs/fs1", f"{P}/old-theirs")]
+    for host, owner, path in rows:
+        conn.execute("INSERT INTO files (host, root, path, parent, name, size, mtime, "
+                     "ctime, type, seen_at) VALUES (?, ?, ?, ?, ?, 1, 0, 0, 'file', 'x')",
+                     (host, owner, path, P, path.rsplit("/", 1)[1]))
+    conn.commit()
+    importer.import_policy(conn, write(tmp_path, scoped("fileset proj", line(f"{P}/a"))),
+                           root=P)
+    left = paths_of(conn)
+    assert f"{P}/old-mine" not in left and f"{P}/old-theirs" in left
+
+
+def test_a_truncated_re_import_removes_nothing(conn, tmp_path):
+    importer.import_policy(conn, FIXTURE)
+    before = paths_of(conn)
+    cut = FIXTURE.read_text().splitlines(keepends=True)[:-3]
+    with pytest.raises(policy.ListingError, match="incomplete"):
+        importer.import_policy(conn, write(tmp_path, cut, "cut.raw"))
+    assert paths_of(conn) == before
+
+
+def test_an_unknown_scope_is_refused_before_writing(conn, tmp_path):
+    with pytest.raises(policy.ListingError, match="unknown scope"):
+        importer.import_policy(conn, write(tmp_path, scoped("inodespace x", line(f"{P}/a"))))
+    assert count(conn) == 0
+
+
+def test_cdm_import_reports_what_it_removed(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CDM_DATA_DIR", str(tmp_path / "data"))
+    cli.main(["import", "--policy", str(write(tmp_path, scoped(
+        "fileset proj", line(f"{P}/a"), line(f"{P}/b")), "1.raw"))])
+    capsys.readouterr()
+    cli.main(["import", "--policy", str(write(tmp_path, scoped(
+        "fileset proj", line(f"{P}/a")), "2.raw"))])
+    assert "removed 1 row(s) the listing no longer contains" in capsys.readouterr().err
+
+
+def test_an_empty_listing_needs_a_root_and_then_empties_it(conn, tmp_path):
+    importer.import_policy(conn, write(tmp_path, scoped(
+        "fileset proj", line(f"{P}/a"), line(f"{P}/b")), "1.raw"), root=P)
+    empty = write(tmp_path, scoped("fileset proj"), "empty.raw")
+    with pytest.raises(policy.ListingError, match="pass --root"):
+        importer.import_policy(conn, empty)
+    assert count(conn) == 2
+    stats = importer.import_policy(conn, empty, root=P)
+    assert stats.pruned == 2 and count(conn) == 0

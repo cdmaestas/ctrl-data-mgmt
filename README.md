@@ -199,9 +199,14 @@ then hold every user's file names.
 otherwise loads it in one transaction under a logical host,
 `<filesystem>@<cluster>`, so listings from any node line up. From then on
 `find`, `du`, `dupes`, `stat`, `suggest`, `guide` and the MCP tools cover your
-own scans and every imported listing together. Removing files that are gone,
-access times, fileset and pool, and hashing for imported data are the next
-steps on the [roadmap](docs/roadmap.md).
+own scans and every imported listing together.
+
+Each import is a snapshot of what its listing covers: re-importing removes rows
+for files that are gone. A fileset listing covers only that fileset — Storage
+Scale leaves out other filesets even when they are linked under its junction —
+so re-importing a fileset never removes a nested fileset's rows. Access times
+and hashing for imported data are the next steps on the
+[roadmap](docs/roadmap.md).
 
 ## Last access time
 
