@@ -163,7 +163,8 @@ $ cdm suggest
 Each suggestion has a risk: **none** is index housekeeping (a stale scan, an
 unhashed root), **safe** regenerates on its own (package caches), and **review**
 means look first (build output, old installers, model files, large git
-histories, duplicates, app caches). The rules are conservative on purpose:
+histories, duplicates, app caches, and cold data on a Storage Scale fast pool).
+The rules are conservative on purpose:
 
 - Age is the later of **last modified** and **last read**, where the
   filesystem keeps trustworthy access times (see below). A recent read may be
@@ -205,6 +206,13 @@ Each import is a snapshot of what its listing covers: re-importing removes rows
 for files that are gone. A fileset listing covers only that fileset — Storage
 Scale leaves out other filesets even when they are linked under its junction —
 so re-importing a fileset never removes a nested fileset's rows.
+
+For tiering, `cdm suggest` finds files neither modified nor read for 180 days
+(`--cold-after`) that are still on the fast pool (`--fast-pool`, default
+`system`), and drafts a `MIGRATE` rule to the slower pool for an administrator
+to review and dry-run with `mmapplypolicy -I test`. The rule is limited to the
+listing's own fileset, never the whole filesystem unless that is what was
+listed, and nothing is suggested where access times are suppressed.
 
 Each file's fileset and storage pool are kept: `cdm storage` totals the space
 by pool and fileset, and `cdm find --pool data1` or `--fileset proj` narrows a

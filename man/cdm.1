@@ -441,8 +441,9 @@ notes when a new root overlaps an existing one.
 .B "cdm suggest"
 reads the index and lists things worth doing: package and application caches,
 dependencies and build output untouched for a while, large git histories, old
-installers and downloaded archives, AI model files, duplicates, and index
-housekeeping. Each comes with its size, the reason, a risk and the command a
+installers and downloaded archives, AI model files, duplicates, cold data on a
+Storage Scale fast pool, and index housekeeping. Each comes with its size, the
+reason, a risk and the command a
 person would run.
 .B cdm
 never runs these commands.
@@ -473,6 +474,24 @@ Default 90.
 .TP
 .BI \-\-root " path"
 Only this root and roots nested in it.
+.TP
+.BI \-\-fast\-pool " pool" ", " \-\-cold\-pool " pool" ", " \-\-cold\-after " days"
+For imported Storage Scale listings: files neither modified nor read for
+.I days
+(default 180) that are still on the fast pool (default
+.BR system )
+are suggested for the cold pool, with a drafted
+.B MIGRATE
+rule to review and dry\-run with
+.BR "mmapplypolicy \-I test" .
+The cold pool defaults to the one other pool the data uses; with none, nothing
+is suggested, and with several the rule leaves the choice to the
+administrator. Only files with a trusted access time count, so a filesystem
+that suppresses access\-time updates gets no suggestion. The rule is limited to
+the listing's own scope \(em its fileset, or the whole filesystem \(em never
+wider than what
+.B cdm
+saw.
 .TP
 .BI \-\-limit " n"
 Show at most

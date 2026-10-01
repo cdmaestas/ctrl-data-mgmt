@@ -27,7 +27,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
-from . import hasher
+from . import hasher, policy
 from . import roots as roots_mod
 from .shape import DAY, GB, MB, human
 
@@ -131,11 +131,17 @@ class Suggestion:
     bytes: int = 0
     action: str | None = None
     items: list[Item] = field(default_factory=list)
+    # A drafted Storage Scale policy for an administrator to review and run:
+    # the full one, and one without fileset names for when names are hidden.
+    draft: str | None = None
+    draft_without_names: str | None = None
 
     def render(self, names: bool, max_items: int = MAX_ITEMS) -> dict:
         out = {"id": self.id, "title": self.title, "detail": self.detail,
                "risk": self.risk, "bytes": self.bytes, "size": human(self.bytes),
                "action": self.action, "item_count": len(self.items)}
+        if self.draft is not None:
+            out["draft"] = self.draft if names else self.draft_without_names
         if names:
             out["items"] = [{**asdict(i), "size": i.size} for i in self.items[:max_items]]
         elif self.items and self.action is None:
@@ -458,6 +464,86 @@ def _file_rules(idx: _Index, now: float) -> list[Suggestion]:
     return out
 
 
+# --- storage tiers -------------------------------------------------------------
+
+FAST_POOL = "system"
+COLD_DAYS = 180
+
+
+def _draft(device: str, fast: str, cold: str, fileset: str | None, days: int) -> str:
+    scope = f"\n  FOR FILESET('{fileset}')" if fileset else ""
+    return (f"/* Drafted by cdm suggest. Review it, then dry-run it as root -- this\n"
+            f"   reports what it would move and moves nothing:\n"
+            f"     mmapplypolicy {device} -P cdm-tier.pol -I test */\n"
+            f"RULE 'cdm-cold-to-{cold}' MIGRATE FROM POOL '{fast}' TO POOL '{cold}'"
+            f"{scope}\n"
+            f"  WHERE DAYS(CURRENT_TIMESTAMP) - DAYS(ACCESS_TIME) > {days}\n"
+            f"    AND DAYS(CURRENT_TIMESTAMP) - DAYS(MODIFICATION_TIME) > {days}\n")
+
+
+def _tiering_rule(idx: _Index, now: float, fast: str, cold_pool: str | None,
+                  days: int) -> list[Suggestion]:
+    """Data neither modified nor read in `days`, still on the fast pool.
+
+    Imported listings only, and only files with a trusted access time: where a
+    filesystem suppresses atime updates, age cannot be judged and nothing is
+    suggested. The drafted rule is scoped to what the listing covered -- one
+    fileset, or the whole filesystem -- never wider than what cdm was shown.
+    """
+    cutoff = now - days * DAY
+    out = []
+    rwhere, rparams = idx.hosts, list(idx.host_params)
+    if idx.root is not None:
+        rwhere += " AND " + roots_mod.scope_sql("path")
+        rparams += roots_mod.scope_params(idx.root)
+    for r in idx.conn.execute(
+            f"SELECT host, path, scope FROM roots WHERE {rwhere} AND source = ? "
+            f"ORDER BY path", [*rparams, roots_mod.POLICY]):
+        scope = r["scope"] or ""
+        fileset = scope[len("fileset "):] if scope.startswith("fileset ") else None
+        lo, hi = roots_mod.bounds(r["path"])
+        where = ("host = ? AND path >= ? AND path < ? AND type = 'file' "
+                 "AND atime IS NOT NULL")
+        params: list = [r["host"], lo, hi]
+        if fileset:
+            where += " AND fileset = ?"
+            params.append(fileset)
+        pools = [p for (p,) in idx.conn.execute(
+            f"SELECT DISTINCT pool FROM files WHERE {where} AND pool IS NOT NULL "
+            f"ORDER BY pool", params) if p != fast]
+        target = cold_pool or (pools[0] if len(pools) == 1 else None)
+        files, total = idx.conn.execute(
+            f"SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files WHERE {where} "
+            f"AND pool = ? AND max(mtime, atime) < ?", [*params, fast, cutoff]).fetchone()
+        if not total or (target is None and not pools):
+            continue          # nothing cold, or nowhere cdm can see to move it
+        device = r["host"].split("@", 1)[0]
+        names = (device, fast, *([target] if target else []),
+                 *([fileset] if fileset else []))
+        if not all(policy.is_plain_name(n) for n in names):
+            continue          # never put an odd name into a rule run as root
+        cold = target or "<slower pool>"
+        s = Suggestion(
+            f"tier:{r['host']}:{r['path']}", f"Cold data on the {fast} pool",
+            (f"{files:,} file(s) in {r['path']} neither modified nor read in "
+             f"{days}+ days are still on {fast}. Moving them to "
+             f"{target or 'a slower pool (' + ', '.join(pools) + ')'} frees the "
+             f"faster tier. A draft rule is below; dry-run it before running it."),
+            REVIEW, bytes=total,
+            action=f"review the draft, save it as cdm-tier.pol, dry-run with "
+                   f"`mmapplypolicy {device} -P cdm-tier.pol -I test`, then run as root",
+            draft=_draft(device, fast, cold, fileset, days),
+            draft_without_names=_draft(device, fast, cold,
+                                       "<fileset>" if fileset else None, days))
+        for parent, n, size, newest, read in idx.conn.execute(
+                f"SELECT parent, COUNT(*), SUM(size), MAX(mtime), MAX(atime) FROM files "
+                f"WHERE {where} AND pool = ? AND max(mtime, atime) < ? GROUP BY parent "
+                f"ORDER BY 3 DESC LIMIT ?", [*params, fast, cutoff, MAX_ITEMS]):
+            s.items.append(Item(parent, size, n, _iso(newest), last_read=_iso(read)))
+        out.append(s)
+    return out
+
+
 def _duplicate_rule(idx: _Index, names: bool) -> list[Suggestion]:
     r = idx.conn.execute(
         f"SELECT COUNT(*), COALESCE(SUM(size * (n - 1)), 0) FROM ("
@@ -492,14 +578,17 @@ def _duplicate_rule(idx: _Index, names: bool) -> list[Suggestion]:
 
 def suggest(conn, *, host: str, root: str | None = None, names: bool = True,
             older_than_days: int = 90, limit: int = 20,
-            max_items: int = MAX_ITEMS, now: float | None = None) -> dict:
+            max_items: int = MAX_ITEMS, now: float | None = None,
+            fast_pool: str = FAST_POOL, cold_pool: str | None = None,
+            cold_days: int = COLD_DAYS) -> dict:
     """Ranked suggestions for everything indexed on `host` (or under `root`)."""
     now = time.time() if now is None else now
     idx = _Index(conn, host, root)
     dirs = idx.dirs()
     found = (_index_rules(idx, now) + _cache_rules(idx, dirs)
              + _build_rules(idx, dirs, now, older_than_days) + _git_rule(idx, dirs)
-             + _file_rules(idx, now) + _duplicate_rule(idx, names))
+             + _file_rules(idx, now) + _duplicate_rule(idx, names)
+             + _tiering_rule(idx, now, fast_pool, cold_pool, cold_days))
     # Housekeeping first, because it decides whether every other answer is
     # right; then the biggest savings.
     found.sort(key=lambda s: (s.risk != NONE, -s.bytes))
