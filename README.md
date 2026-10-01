@@ -206,6 +206,11 @@ for files that are gone. A fileset listing covers only that fileset — Storage
 Scale leaves out other filesets even when they are linked under its junction —
 so re-importing a fileset never removes a nested fileset's rows.
 
+Each file's fileset and storage pool are kept: `cdm storage` totals the space
+by pool and fileset, and `cdm find --pool data1` or `--fileset proj` narrows a
+search. Over MCP, pools are named but filesets are reported by size rank unless
+names are exposed, because fileset names are often a person's or a project's.
+
 Access times come with the listing, under the same rules as on your own disks:
 with Storage Scale's default `-S relatime` (or `no`), each file's last read and
 whether it has been opened since it changed are recorded, so `find
@@ -349,6 +354,7 @@ the server answers from the *shape* of your data, not its names:
 | `duplicates_summary` | how much looks duplicated, how much is confirmed |
 | `suggest` | what is worth doing, ranked, with risk and command (no paths) |
 | `guide` | the getting-started checklist, with the next step |
+| `storage` | Storage Scale space by pool (named) and fileset (ranked, not named) |
 
 To make it easy to start, the server also offers **prompts** — *Getting
 started* (a step-by-step walk through `guide`), *What's using my disk?*, *What can I clean up?*, *How much is duplicated?*, *What changed
@@ -480,7 +486,8 @@ What comes next, and in what order, is in [docs/roadmap.md](docs/roadmap.md).
 - **[docs/adr/](docs/adr/)** — decision records: why names are opt-in over MCP
   (0002), why suggestions come from one advisory engine (0003), and why the
   getting-started guide takes its status from the index (0004), when an access
-  time is trusted (0005), and how "never opened" is dated (0006).
+  time is trusted (0005), how "never opened" is dated (0006), and why pool
+  names reach the AI by default but fileset names don't (0007).
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — setup, and the list of choices that
   are deliberate rather than accidental.
 - **[docs/releasing.md](docs/releasing.md)** — how a release happens, and the

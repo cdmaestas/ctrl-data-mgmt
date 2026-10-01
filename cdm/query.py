@@ -47,7 +47,7 @@ def parse_when(text: str, *, now: float | None = None) -> float:
 def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
          larger_than=None, smaller_than=None, modified_after=None,
          modified_before=None, accessed_after=None, accessed_before=None,
-         unopened=False, order="size", limit=100):
+         unopened=False, fileset=None, pool=None, order="size", limit=100):
     # Every filter is one optional AND-ed clause over one column. Keeping them
     # in a table rather than a run of ifs is what makes the set easy to extend
     # -- and easy for a future NL layer to enumerate.
@@ -76,6 +76,9 @@ def find(conn, *, host=None, root=None, name=None, iname=None, kind=None,
         # matches neither, so "not accessed since" is never guessed.
         ("atime > ?", accessed_after),
         ("atime < ?", accessed_before),
+        # Storage Scale, from an imported listing; scanned rows have neither.
+        ("fileset = ?", fileset),
+        ("pool = ?", pool),
     )
     clauses, params = [], []
     for sql_fragment, value in specs:

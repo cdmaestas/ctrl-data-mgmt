@@ -89,6 +89,10 @@ commit. It becomes `0.1.0` when that is tagged.
   `relatime` and `no` give each file's last read and "never opened since it
   changed" (dated to the listing); `yes` and unrecognised values give unknown.
   `doctor` shows the setting for each imported root.
+- `cdm storage` and the MCP `storage` tool: files and bytes by Storage Scale
+  storage pool and fileset; `find --fileset` / `--pool` and the same filters on
+  MCP `find`; `stat` shows both. Over MCP, pools are named by default and
+  filesets ranked by size, never named, unless names are exposed (ADR 0007).
 - `cdm policy`: prints a script that lists an IBM Storage Scale fileset (or,
   with `--whole-filesystem`, a whole filesystem) with `mmapplypolicy -I defer`,
   for an administrator to run as root; cdm never runs it. The listing carries
