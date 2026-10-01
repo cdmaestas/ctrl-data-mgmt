@@ -342,3 +342,74 @@ def test_an_empty_listing_needs_a_root_and_then_empties_it(conn, tmp_path):
     assert count(conn) == 2
     stats = importer.import_policy(conn, empty, root=P)
     assert stats.pruned == 2 and count(conn) == 0
+
+
+# --- #10: access times from listings ------------------------------------------------
+
+def with_setting(setting, *rows):
+    head = [h.replace("# suppress_atime: relatime", f"# suppress_atime: {setting}")
+            for h in HEADER]
+    return head + list(rows) + [f"{policy.END}{len(rows)}\n"]
+
+
+def times(conn, path):
+    r = conn.execute("SELECT atime, unopened_until FROM files WHERE path = ?",
+                     (path,)).fetchone()
+    return r["atime"], r["unopened_until"]
+
+
+def test_the_fixture_brings_last_reads_and_never_opened(conn):
+    importer.import_policy(conn, FIXTURE)
+    from datetime import datetime, timezone
+    # "Never opened" is dated to when the listing was made: its header says.
+    listed = datetime(2026, 9, 30, 2, 46, 0, tzinfo=timezone.utc)
+    assert "# generated: 2026-09-30T02:46:00Z" in FIXTURE.read_text()
+    read_model = f"{ROOT}/d0001/d0002/d0004/f0008.gguf"
+    atime, unopened = times(conn, read_model)
+    assert atime == datetime(2026, 9, 28, 8, 0, tzinfo=timezone.utc).timestamp()
+    assert unopened is None, "it was read after it was written"
+    # The installer: accessed a minute before its last change -- never opened.
+    atime, unopened = times(conn, f"{ROOT}/d0001/d0008/f0011.dmg")
+    assert atime is not None and unopened == listed.timestamp()
+    # Directories never carry one.
+    assert conn.execute("SELECT COUNT(*) FROM files WHERE type = 'dir' AND atime IS NOT "
+                        "NULL").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("setting, recorded", [("relatime", True), ("no", True),
+                                               ("yes", False), ("bogus", False)])
+def test_the_atime_setting_decides_what_is_recorded(conn, tmp_path, setting, recorded):
+    row = line(f"{P}/f", mtime="2026-03-01 00:00:00.000000",
+               atime="2026-01-01 00:00:00.000000")
+    importer.import_policy(conn, write(tmp_path, with_setting(setting, row)), root=P)
+    atime, unopened = times(conn, f"{P}/f")
+    assert (atime is not None, unopened is not None) == (recorded, recorded)
+    assert conn.execute("SELECT atime_setting FROM roots").fetchone()[0] == setting
+
+
+def test_a_re_import_under_suppressed_atimes_forgets_old_ones(conn, tmp_path):
+    row = line(f"{P}/f", mtime="2026-03-01 00:00:00.000000",
+               atime="2026-01-01 00:00:00.000000")
+    importer.import_policy(conn, write(tmp_path, with_setting("relatime", row), "1.raw"),
+                           root=P)
+    importer.import_policy(conn, write(tmp_path, with_setting("yes", row), "2.raw"), root=P)
+    assert times(conn, f"{P}/f") == (None, None)
+
+
+def test_doctor_explains_an_imported_roots_access_times(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CDM_DATA_DIR", str(tmp_path / "data"))
+    assert cli.main(["import", "--policy", str(FIXTURE)]) == 0
+    capsys.readouterr()
+    cli.main(["doctor"])
+    out = capsys.readouterr().out
+    assert "Storage Scale -S relatime" in out and "13 of 13 files" in out
+
+
+def test_suggest_and_find_use_imported_access_times(conn):
+    importer.import_policy(conn, FIXTURE)
+    hosts = roots.visible_hosts(conn, LOCAL)
+    models = next(s for s in suggest.suggest(conn, host=hosts)["suggestions"]
+                  if s["id"] == "files:models")
+    assert models["items"][0]["last_read"], "model store has no last read"
+    unopened = {r["name"] for r in query.find(conn, host=hosts, unopened=True)}
+    assert "f0011.dmg" in unopened and "f0008.gguf" not in unopened

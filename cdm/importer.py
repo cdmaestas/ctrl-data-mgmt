@@ -20,18 +20,28 @@ linked under its junction, so re-importing fileset `proj` removes only
 covers everything under its root. Rows an older import stored without a
 fileset are removed only if this root owns them; nothing is guessed.
 
+ACCESS TIMES follow Phase 1's rules (ADRs 0005, 0006), read from the
+filesystem's `mmlsfs -S` setting that the listing's header records:
+`relatime` (the default) and `no` keep atimes updated, so ACCESS_TIME is a
+last read; `yes` suppresses updates, so it is unknown, and so is any value
+not recognised. Where it is a last read, a file whose atime is older than its
+mtime has not been opened since it changed, as of when the listing was made.
+Files only, as for scans. The policy engine reads no file contents, so there
+is no read of cdm's own to discount.
+
 A re-import keeps a file's hash when its size and mtime are unchanged, the same
-rule a rescan uses. Not yet, each its own piece of Phase 2: access times and
-"never opened" (#10), fileset and pool in find and MCP (#11), hashing (#12).
+rule a rescan uses. Not yet, each its own piece of Phase 2: fileset and pool
+in find and MCP (#11), hashing (#12).
 """
 from __future__ import annotations
 
 import posixpath
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
+from . import atime as atime_mod
 from . import policy
 from . import roots as roots_mod
 
@@ -43,13 +53,15 @@ PROGRESS_SECONDS = 1.0
 # unchanged (same rule as scan.hash_for); anything else invalidates it.
 _UPSERT = (
     "INSERT INTO files (host, root, path, parent, name, size, mtime, ctime, inode, "
-    "                   type, seen_at, fileset, pool) "
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+    "                   type, seen_at, fileset, pool, atime, self_atime, "
+    "                   unopened_until) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?) "
     "ON CONFLICT(host, path) DO UPDATE SET "
     "  root=excluded.root, parent=excluded.parent, name=excluded.name, "
     "  size=excluded.size, mtime=excluded.mtime, ctime=excluded.ctime, "
     "  inode=excluded.inode, type=excluded.type, seen_at=excluded.seen_at, "
-    "  fileset=excluded.fileset, pool=excluded.pool, "
+    "  fileset=excluded.fileset, pool=excluded.pool, atime=excluded.atime, "
+    "  self_atime=NULL, unopened_until=excluded.unopened_until, "
     "  hash=CASE WHEN files.hash_size=excluded.size AND files.hash_mtime=excluded.mtime "
     "            THEN files.hash END, "
     "  hash_kind=CASE WHEN files.hash_size=excluded.size "
@@ -115,6 +127,36 @@ def _survey(path: Path) -> tuple[dict[str, str], int, str | None]:
     return header, count, common
 
 
+# `mmlsfs -S` values: whether a listing's ACCESS_TIME is a last read.
+_SUPPRESS_ATIME = {"relatime": atime_mod.LAST, "no": atime_mod.LAST,
+                   "yes": atime_mod.NONE}
+
+
+def atime_mode(setting: str) -> str:
+    """LAST or NONE for a listing's recorded `-S` value; unknown values are NONE."""
+    return _SUPPRESS_ATIME.get(setting.strip().lower(), atime_mod.NONE)
+
+
+def atime_reason(setting: str | None) -> str:
+    """Why an imported root's access times are or are not recorded."""
+    if setting is None:
+        return "imported before cdm recorded the setting; re-import to record it"
+    meaning = {"relatime": "updated on read, at most daily",
+               "no": "updated on every read",
+               "yes": "access-time updates suppressed"}.get(setting.strip().lower(),
+                                                            "not a setting cdm knows")
+    return f"Storage Scale -S {setting}: {meaning}"
+
+
+def _listed_at(header: dict[str, str]) -> float:
+    """When the listing was made, from its header; now if it does not say."""
+    try:
+        return datetime.strptime(header.get("generated", ""), "%Y-%m-%dT%H:%M:%SZ") \
+            .replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return time.time()
+
+
 def _prune(conn, host: str, root_key: str, scope: str, stamp: str) -> int:
     """Remove rows under `root_key` that this complete listing no longer has.
 
@@ -153,6 +195,8 @@ def import_policy(conn, path: Path | str, *, root: str | None = None,
     if not root_key.startswith("/"):
         raise policy.ListingError(f"root {root_key!r} must be an absolute path")
     host = f"{header['device']}@{header['cluster']}"
+    trusted = atime_mode(header["suppress_atime"]) == atime_mod.LAST
+    listed_at = _listed_at(header)
     stats.host, stats.root = host, root_key
     stamp = datetime.now().isoformat(timespec="microseconds")
     inner = roots_mod.nested(conn, host, root_key)
@@ -172,8 +216,11 @@ def import_policy(conn, path: Path | str, *, root: str | None = None,
                     f"{e.path} is outside the root {root_key}; nothing was imported")
             parent, name = posixpath.split(e.path)
             owner = roots_mod.owner(parent, root_key, inner)
+            last_read = e.atime if trusted and e.kind == "file" else None
+            unopened = (listed_at if last_read is not None and e.atime < e.mtime
+                        else None)
             batch.append((host, owner, e.path, parent, name, e.size, e.mtime, e.ctime,
-                          e.inode, e.kind, stamp, e.fileset, e.pool))
+                          e.inode, e.kind, stamp, e.fileset, e.pool, last_read, unopened))
             if e.kind == "dir":
                 stats.dirs += 1
             elif e.kind == "link":
@@ -192,10 +239,11 @@ def import_policy(conn, path: Path | str, *, root: str | None = None,
         conn.executemany(_UPSERT, batch)
     stats.pruned = _prune(conn, host, root_key, scope, stamp)
     conn.execute(
-        "INSERT INTO roots (host, path, added_at, last_scan, source) VALUES (?,?,?,?,?) "
+        "INSERT INTO roots (host, path, added_at, last_scan, source, atime_setting) "
+        "VALUES (?,?,?,?,?,?) "
         "ON CONFLICT(host, path) DO UPDATE SET last_scan=excluded.last_scan, "
-        "source=excluded.source",
-        (host, root_key, stamp, stamp, roots_mod.POLICY))
+        "source=excluded.source, atime_setting=excluded.atime_setting",
+        (host, root_key, stamp, stamp, roots_mod.POLICY, header["suppress_atime"]))
     # One transaction: an import interrupted part way leaves the index as it
     # was, not half-updated.
     conn.commit()

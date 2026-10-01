@@ -613,7 +613,8 @@ def cmd_doctor(args) -> int:
             "AND (hash_size != size OR hash_mtime != mtime)"
         ).fetchone()[0]
         root_rows = conn.execute(
-            "SELECT host, path, last_scan, source FROM roots ORDER BY path").fetchall()
+            "SELECT host, path, last_scan, source, atime_setting FROM roots "
+            "ORDER BY path").fetchall()
         regular, with_atime, unopened = conn.execute(
             "SELECT COUNT(*), COUNT(atime), COUNT(unopened_until) FROM files "
             "WHERE type = 'file'").fetchone()
@@ -636,6 +637,10 @@ def cmd_doctor(args) -> int:
             # not on this disk, and that is not a fault.
             print(f"  {r['path']}  imported listing ({r['host']}) "
                   f"{r['last_scan'] or 'never'}")
+            setting = r["atime_setting"]
+            mode = importer.atime_mode(setting) if setting else atime.NONE
+            print(f"    access times: {_MODE_MEANS[mode]} "
+                  f"({importer.atime_reason(setting)})")
             continue
         gone = "" if Path(r["path"]).is_dir() else "   <- gone from disk"
         if gone:

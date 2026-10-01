@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import hashing, paths
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS roots (
@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS roots (
     -- (`cdm import --policy`). Imported roots live under a logical host,
     -- <filesystem>@<cluster>, and are visible alongside this machine's own.
     source     TEXT,
+    -- For an imported listing, the filesystem's `mmlsfs -S` setting as the
+    -- listing recorded it: what its access times mean (importer.py).
+    atime_setting TEXT,
     PRIMARY KEY (host, path)
 );
 
@@ -185,7 +188,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for table, columns in (("files", (("atime", "REAL"), ("self_atime", "REAL"),
                                       ("unopened_until", "REAL"), ("fileset", "TEXT"),
                                       ("pool", "TEXT"))),
-                           ("roots", (("source", "TEXT"),))):
+                           ("roots", (("source", "TEXT"), ("atime_setting", "TEXT")))):
         existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
         for column, kind in columns if existing else ():
             if column not in existing:
