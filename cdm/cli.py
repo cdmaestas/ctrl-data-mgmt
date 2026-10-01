@@ -410,7 +410,9 @@ def cmd_suggest(args, conn) -> int:
     root = str(Path(args.root).expanduser().resolve()) if args.root else None
     result = suggest.suggest(conn, host=_visible(conn), root=root,
                              older_than_days=args.older_than, limit=args.limit,
-                             max_items=10 ** 6 if args.all else args.items)
+                             max_items=10 ** 6 if args.all else args.items,
+                             fast_pool=args.fast_pool, cold_pool=args.cold_pool,
+                             cold_days=args.cold_after)
     if args.json:
         print(json.dumps(result, indent=2))
         return 0
@@ -446,6 +448,9 @@ def cmd_suggest(args, conn) -> int:
                   f"(--all to list every one)")
         if s["action"]:
             print(f"                     $ {s['action']}")
+        if s.get("draft"):
+            for rule_line in s["draft"].rstrip("\n").splitlines():
+                print(f"{pad}  {rule_line}")
         print()
     if result["truncated"]:
         _err(f"showing the top {args.limit}; --limit to see more")
@@ -941,6 +946,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="restrict to one root (and roots nested in it)")
     s.add_argument("--older-than", metavar="DAYS", type=_days, default=90,
                    help="how long build output must be untouched (default 90d)")
+    s.add_argument("--fast-pool", metavar="POOL", default=suggest.FAST_POOL,
+                   help="the Storage Scale pool to keep for active data "
+                        f"(default {suggest.FAST_POOL})")
+    s.add_argument("--cold-pool", metavar="POOL",
+                   help="where cold data should go (default: the one other pool "
+                        "the data uses, if there is exactly one)")
+    s.add_argument("--cold-after", metavar="DAYS", type=_days, default=suggest.COLD_DAYS,
+                   help="neither modified nor read for this long counts as cold "
+                        f"(default {suggest.COLD_DAYS}d)")
     s.add_argument("--limit", type=int, default=20, help="suggestions to show")
     s.add_argument("--items", type=int, default=5, help="paths per suggestion")
     s.add_argument("--all", action="store_true", help="every path per suggestion")

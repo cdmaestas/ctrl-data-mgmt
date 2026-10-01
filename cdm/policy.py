@@ -62,6 +62,11 @@ def _check(kind: str, value: str, pattern: re.Pattern = _NAME) -> str:
     return value
 
 
+def is_plain_name(value: str) -> bool:
+    """Whether `value` may be written into a script or rule run as root."""
+    return bool(_NAME.match(value))
+
+
 # --- generating ---------------------------------------------------------------
 
 def rules(fileset: str | None) -> str:

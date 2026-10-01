@@ -247,11 +247,12 @@ def import_policy(conn, path: Path | str, *, root: str | None = None,
         conn.executemany(_UPSERT, batch)
     stats.pruned = _prune(conn, host, root_key, scope, stamp)
     conn.execute(
-        "INSERT INTO roots (host, path, added_at, last_scan, source, atime_setting) "
-        "VALUES (?,?,?,?,?,?) "
+        "INSERT INTO roots (host, path, added_at, last_scan, source, atime_setting, scope) "
+        "VALUES (?,?,?,?,?,?,?) "
         "ON CONFLICT(host, path) DO UPDATE SET last_scan=excluded.last_scan, "
-        "source=excluded.source, atime_setting=excluded.atime_setting",
-        (host, root_key, stamp, stamp, roots_mod.POLICY, header["suppress_atime"]))
+        "source=excluded.source, atime_setting=excluded.atime_setting, "
+        "scope=excluded.scope",
+        (host, root_key, stamp, stamp, roots_mod.POLICY, header["suppress_atime"], scope))
     # One transaction: an import interrupted part way leaves the index as it
     # was, not half-updated.
     conn.commit()

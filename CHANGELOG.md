@@ -12,6 +12,9 @@ commit. It becomes `0.1.0` when that is tagged.
 
 ### Upgrading
 
+- **Index schema 9** records each imported root's listing scope (`fileset
+  NAME` or `filesystem`), so a drafted rule never reaches beyond it. Added in
+  place; re-import a listing to record it.
 - **Index schema 8** records, for each imported root, the filesystem's
   `mmlsfs -S` setting from its listing. Added in place on first use; roots
   imported before it show "re-import to record it" in `doctor`.
@@ -96,6 +99,12 @@ commit. It becomes `0.1.0` when that is tagged.
   changed since they were indexed are reported, not hashed. Its own reads are
   discounted: the next import keeps the earlier last read. The guide and
   `suggest` point imported roots at it.
+- A pool-aware suggestion: files on imported listings neither modified nor
+  read for 180 days (`--cold-after`) that are still on the fast pool
+  (`--fast-pool`, default `system`), with a drafted `MIGRATE` rule to the slower
+  pool (`--cold-pool`, default the one other pool in use) for an administrator
+  to dry-run with `mmapplypolicy -I test`. Scoped to the listing's fileset;
+  nothing where access times are unknown; odd names never enter a rule.
 - `cdm storage` and the MCP `storage` tool: files and bytes by Storage Scale
   storage pool and fileset; `find --fileset` / `--pool` and the same filters on
   MCP `find`; `stat` shows both. Over MCP, pools are named by default and
