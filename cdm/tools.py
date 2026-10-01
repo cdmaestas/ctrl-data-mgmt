@@ -55,6 +55,11 @@ SHAPE_TOOLS = {
     "duplicates_summary": "How much space looks duplicated, how much is "
                           "confirmed, and how much of the tree was hashed at "
                           "all. Returns no filenames.",
+    "storage": "Files and bytes per IBM Storage Scale storage pool (by name) and "
+               "per fileset, from imported policy listings. Fileset names are "
+               "only included when names are exposed; otherwise filesets are "
+               "ranked by size (fileset #1 is the largest). Answers 'which "
+               "tier or fileset holds the space'.",
     "guide": "Step-by-step setup and upkeep: index a folder, hash it, look at "
              "suggestions, clean up and rescan, keep it current, connect an AI "
              "client. Each step's status is read from the index; `next` says "
@@ -73,7 +78,8 @@ NAME_TOOLS = {
             "2026-08-01. accessed_before/after only match files with a trusted "
             "access time. unopened=true lists files known not to have been opened "
             "since they last changed (e.g. downloads never used); each result's "
-            "unopened_as_of says as of when.",
+            "unopened_as_of says as of when. fileset and pool filter imported "
+            "Storage Scale listings.",
     "du": "Disk usage by subdirectory under a path, answered from the index. "
           "Returns directory paths.",
     "dupes": "Groups of files that share a hash. Returns paths. Partial-hash "
@@ -179,7 +185,9 @@ def _file_row(r) -> dict[str, Any]:
             "size": shape.human(r["size"]), "modified": _iso(r["mtime"]),
             "accessed": _iso(r["atime"]),
             # Not opened between its last change and this date; see ADR 0006.
-            "unopened_as_of": _iso(r["unopened_until"])}
+            "unopened_as_of": _iso(r["unopened_until"]),
+            # Storage Scale, from an imported listing; None for scanned files.
+            "fileset": r["fileset"], "pool": r["pool"]}
 
 
 class Catalog:
@@ -280,6 +288,20 @@ class Catalog:
                      "terminal confirms them before anything is deleted.")
         return _next(out, steps)
 
+    def storage(self, root: str | None = None) -> dict[str, Any]:
+        with self._open() as conn:
+            out = shape.storage(conn, host=self._hosts(conn),
+                                root=self._root(conn, root), names=self.expose_names)
+        steps = ["`suggest` flags data that is cold on the fastest pool, once "
+                 "access times are known."]
+        if not out["pools"]:
+            steps = ["Nothing here comes from a Storage Scale listing: see `cdm policy` "
+                     "and `cdm import --policy`."]
+        elif not self.expose_names:
+            steps.append("Fileset names are withheld; the user can see them with "
+                         "`cdm storage` in a terminal.")
+        return _next(out, steps)
+
     def guide(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
             out = guide_mod.guide(conn, host=self._hosts(conn), root=self._root(conn, root))
@@ -309,6 +331,7 @@ class Catalog:
              smaller_than: str | None = None, modified_after: str | None = None,
              modified_before: str | None = None, accessed_after: str | None = None,
              accessed_before: str | None = None, unopened: bool = False,
+             fileset: str | None = None, pool: str | None = None,
              root: str | None = None, order: str = "size",
              limit: int = 50) -> dict[str, Any]:
         if kind not in (None, "file", "dir", "link"):
@@ -330,7 +353,7 @@ class Catalog:
                                 if accessed_after else None),
                 accessed_before=(query.parse_when(accessed_before)
                                  if accessed_before else None),
-                unopened=bool(unopened),
+                unopened=bool(unopened), fileset=fileset, pool=pool,
                 order=order, limit=limit + 1)
         return _next({"results": [_file_row(r) for r in rows[:limit]],
                       "truncated": len(rows) > limit},

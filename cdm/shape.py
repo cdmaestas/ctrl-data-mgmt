@@ -282,3 +282,31 @@ def duplicates_summary(conn, *, host: str | None = None,
                      "full_hashed": hashed.get("full", 0),
                      "stale_hashes": stale},
     }
+
+
+def storage(conn, *, host=None, root: str | None = None, names: bool = False) -> dict:
+    """Files and bytes by Storage Scale storage pool and by fileset.
+
+    Pool names are shape: storage tiers named by an administrator (system,
+    data1, ssd). Fileset names are not, by default: they are often a user's
+    name or a project's codename. Without `names`, filesets are reported by
+    rank -- "fileset #1" is the largest -- so the shape survives and the names
+    do not. See docs/adr/0007. Files that came from a scan, not a listing,
+    have neither and are counted apart.
+    """
+    where, params = _scope(host, root)
+    base = f"FROM files WHERE type = 'file' AND {where}"
+    pools = [{"pool": r[0], "files": r[1], "bytes": r[2], "size": human(r[2])}
+             for r in conn.execute(
+                 f"SELECT pool, COUNT(*), COALESCE(SUM(size), 0) {base} AND pool IS NOT "
+                 f"NULL GROUP BY pool ORDER BY 3 DESC", params)]
+    filesets = []
+    for rank, r in enumerate(conn.execute(
+            f"SELECT fileset, COUNT(*), COALESCE(SUM(size), 0) {base} AND fileset IS "
+            f"NOT NULL GROUP BY fileset ORDER BY 3 DESC, 1", params), 1):
+        filesets.append({"fileset": r[0] if names else f"fileset #{rank}",
+                         "files": r[1], "bytes": r[2], "size": human(r[2])})
+    n, b = conn.execute(f"SELECT COUNT(*), COALESCE(SUM(size), 0) {base} AND pool IS "
+                        f"NULL AND fileset IS NULL", params).fetchone()
+    return {"pools": pools, "filesets": filesets, "fileset_names": names,
+            "not_from_a_listing": {"files": n, "bytes": b, "size": human(b)}}

@@ -96,6 +96,15 @@ for an administrator to run. See
 Show the getting\-started checklist and what to do next. See
 .BR GUIDE .
 .TP
+.BI "storage " [ options ]
+Files and bytes by Storage Scale storage pool and by fileset, from imported
+listings, with names. See
+.BR "STORAGE SCALE" .
+Takes
+.BI \-\-root " path"
+and
+.BR \-\-json .
+.TP
 .BI "stat " path
 Print everything the index records about one path, including whether its hash
 has gone stale and, where they are known, when the file was last read and
@@ -194,6 +203,11 @@ either. See
 .B \-\-unopened
 Only files known not to have been opened since they last changed. See
 .BR "ACCESS TIMES" .
+.TP
+.BI \-\-fileset " name" ", " \-\-pool " name"
+Only files in this Storage Scale fileset, or on this storage pool. Only
+imported listings have either. See
+.BR "STORAGE SCALE" .
 .TP
 .BI \-\-root " path"
 Restrict results to one root, including any roots nested inside it.
@@ -598,6 +612,16 @@ does not recognise. The policy engine reports times to the microsecond.
 .B "cdm doctor"
 shows the setting for each imported root. See
 .BR "ACCESS TIMES" .
+.PP
+Each file's fileset and storage pool are recorded.
+.B "cdm storage"
+totals them,
+.B "cdm find \-\-fileset"
+and
+.B \-\-pool
+filter on them, and the MCP
+.B storage
+tool reports pools by name and filesets by rank unless names are exposed.
 .TP
 .BI \-\-policy " file" .raw
 The listing. Required.
@@ -633,11 +657,17 @@ Out of the box the server offers only
 .BR age_histogram ,
 .BR extensions ,
 .BR duplicates_summary ,
+.BR storage ,
 .B suggest
 and
 .BR guide :
 totals, histograms, file types and ranked suggestions, with no file or
-directory name below a root. With a cloud\-hosted model every answer goes to
+directory name below a root.
+.B storage
+names storage pools, which name tiers rather than people, but reports
+filesets by rank of size (\(lqfileset #1\(rq is the largest) unless names are
+exposed, because fileset names are often a person's or a project's.
+With a cloud\-hosted model every answer goes to
 its provider, and filenames are often sensitive on their own. Extensions are
 shown only when they look like a file type \(em short, alphanumeric, and shared
 by at least two files \(em so a suffix cannot easily carry part of a name.

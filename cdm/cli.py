@@ -1,7 +1,7 @@
 """The command line.
 
-Verbs: scan, rescan, import, roots, forget, find, du, dupes, suggest, guide, policy,
-stat, doctor, mcp.
+Verbs: scan, rescan, import, roots, forget, find, du, dupes, storage, suggest, guide,
+policy, stat, doctor, mcp.
 
 Output goes to stdout as plain columns; anything the user did not ask for --
 skip counts, warnings, timings -- goes to stderr, so `cdm find ... | xargs` and
@@ -20,7 +20,20 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import atime, db, guide, hashing, importer, paths, policy, probe, query, roots, suggest
+from . import (
+    atime,
+    db,
+    guide,
+    hashing,
+    importer,
+    paths,
+    policy,
+    probe,
+    query,
+    roots,
+    shape,
+    suggest,
+)
 from .exclude import Excluder
 from .scan import scan_root
 
@@ -297,6 +310,8 @@ def cmd_find(args, conn) -> int:
             accessed_before=(query.parse_when(args.accessed_before)
                              if args.accessed_before else None),
             unopened=args.unopened,
+            fileset=args.fileset,
+            pool=args.pool,
             order=args.order,
             limit=args.limit,
         )
@@ -455,6 +470,31 @@ def cmd_import(args, conn) -> int:
     return 0
 
 
+@with_index
+def cmd_storage(args, conn) -> int:
+    root = str(Path(args.root).expanduser().resolve()) if args.root else None
+    # The person at the terminal owns the index, so names are shown here.
+    out = shape.storage(conn, host=_visible(conn), root=root, names=True)
+    if args.json:
+        print(json.dumps(out, indent=2))
+        return 0
+    if not out["pools"] and not out["filesets"]:
+        _err("nothing from a Storage Scale listing yet: see `cdm policy` and "
+             "`cdm import --policy`")
+        return 0
+    for title, rows, key in (("pool", out["pools"], "pool"),
+                             ("fileset", out["filesets"], "fileset")):
+        print(f"{title:<8} {'size':>8}  {'files':>10}")
+        for r in rows:
+            print(f"{r[key]:<8} {r['size']:>8}  {r['files']:>10,}")
+        print()
+    rest = out["not_from_a_listing"]
+    if rest["files"]:
+        _err(f"also {rest['files']:,} scanned file(s), {rest['size']}, with no pool or "
+             f"fileset")
+    return 0
+
+
 def cmd_policy(args) -> int:
     """Print the listing script; cdm never runs mmapplypolicy itself."""
     fileset = None if args.whole_filesystem else args.fileset
@@ -561,6 +601,8 @@ def cmd_stat(args, conn) -> int:
     elif row["type"] == "file":
         print("accessed  not recorded (the filesystem does not update access times, "
               "or it has not been read since cdm last hashed it)")
+    if row["fileset"] is not None:
+        print(f"fileset   {row['fileset']}  (pool {row['pool']})")
     if row["unopened_until"] is not None:
         print(f"opened    not since it last changed, as of "
               f"{human_time(row['unopened_until'])}")
@@ -763,6 +805,10 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--accessed-after", metavar="WHEN",
                    help="last read after WHEN; files with no trusted access time never match")
     f.add_argument("--accessed-before", metavar="WHEN")
+    f.add_argument("--fileset", metavar="NAME",
+                   help="Storage Scale fileset (imported listings only)")
+    f.add_argument("--pool", metavar="NAME",
+                   help="Storage Scale storage pool (imported listings only)")
     f.add_argument("--unopened", action="store_true",
                    help="only files known not to have been opened since they last changed")
     f.add_argument("--root", metavar="PATH", help="restrict to one root (and roots nested in it)")
@@ -813,6 +859,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="log a timestamped rate line every SECS seconds (default 10) "
                         "even when stderr is not a terminal")
     i.set_defaults(func=cmd_import)
+
+    st = sub.add_parser(
+        "storage", help="files and bytes by Storage Scale pool and fileset",
+        description="Totals by storage pool and fileset, from imported Storage Scale "
+                    "listings.")
+    st.add_argument("--root", metavar="PATH",
+                    help="restrict to one root (and roots nested in it)")
+    st.add_argument("--json", action="store_true")
+    st.set_defaults(func=cmd_storage)
 
     o = sub.add_parser(
         "policy", help="print a script that lists a Storage Scale fileset for import",
