@@ -12,6 +12,8 @@ commit. It becomes `0.1.0` when that is tagged.
 
 ### Upgrading
 
+- **Index schema 7** adds each file's Storage Scale fileset and storage pool
+  (NULL for scanned files). Added in place on first use.
 - **Index schema 6** records each root's source (`scan` or an imported
   `policy` listing). Added in place on first use; existing roots count as scans.
   Restart a running `cdm mcp` afterwards.
@@ -76,7 +78,10 @@ commit. It becomes `0.1.0` when that is tagged.
   every command and MCP tool alongside this machine's scans; `--all-hosts`
   still adds other machines' rows. `roots` marks imported listings, `forget`
   removes them, and `suggest` and `guide` advise re-importing rather than
-  rescanning them.
+  rescanning them. An import is a snapshot of its scope: re-importing removes
+  rows the listing no longer contains -- only that fileset's, for a fileset
+  listing, so a nested fileset's rows survive -- and an empty listing needs
+  `--root`. Each file's fileset and storage pool are recorded.
 - `cdm policy`: prints a script that lists an IBM Storage Scale fileset (or,
   with `--whole-filesystem`, a whole filesystem) with `mmapplypolicy -I defer`,
   for an administrator to run as root; cdm never runs it. The listing carries

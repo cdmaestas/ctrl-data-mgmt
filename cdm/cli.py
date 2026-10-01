@@ -450,6 +450,8 @@ def cmd_import(args, conn) -> int:
     per_sec, _ = stats.rates()
     _err(f"{stats.root} ({stats.host}): imported {stats.files} files, {stats.dirs} "
          f"dirs, {stats.links} links in {stats.elapsed:.1f}s ({per_sec:,.0f} entries/s)")
+    if stats.pruned:
+        _err(f"  removed {stats.pruned} row(s) the listing no longer contains")
     return 0
 
 
