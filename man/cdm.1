@@ -579,7 +579,25 @@ that is empty removes everything under the root, so it needs an explicit
 .BR \-\-root .
 Rows are updated in place, and a file keeps its hash while its size and
 modification time are unchanged. The fileset and storage pool of each file are
-recorded. Access times and hashing for imported files follow in 0.2.0.
+recorded. Hashing imported files follows in 0.2.0.
+.PP
+Access times follow the filesystem's
+.B "mmlsfs \-S"
+setting, which the listing records:
+.B relatime
+(the default) and
+.B no
+keep access times updated, so each file's last read and whether it has been
+opened since it last changed are recorded, the latter dated to when the
+listing was made;
+.B yes
+suppresses updates, so nothing is recorded, and neither is anything for a
+value
+.B cdm
+does not recognise. The policy engine reports times to the microsecond.
+.B "cdm doctor"
+shows the setting for each imported root. See
+.BR "ACCESS TIMES" .
 .TP
 .BI \-\-policy " file" .raw
 The listing. Required.

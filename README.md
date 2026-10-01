@@ -204,8 +204,14 @@ own scans and every imported listing together.
 Each import is a snapshot of what its listing covers: re-importing removes rows
 for files that are gone. A fileset listing covers only that fileset — Storage
 Scale leaves out other filesets even when they are linked under its junction —
-so re-importing a fileset never removes a nested fileset's rows. Access times
-and hashing for imported data are the next steps on the
+so re-importing a fileset never removes a nested fileset's rows.
+
+Access times come with the listing, under the same rules as on your own disks:
+with Storage Scale's default `-S relatime` (or `no`), each file's last read and
+whether it has been opened since it changed are recorded, so `find
+--accessed-before`, `find --unopened` and `suggest` work on cluster data; with
+`-S yes` (updates suppressed) they are recorded as unknown. `cdm doctor` shows
+which applies. Hashing imported data is the next step on the
 [roadmap](docs/roadmap.md).
 
 ## Last access time

@@ -12,6 +12,9 @@ commit. It becomes `0.1.0` when that is tagged.
 
 ### Upgrading
 
+- **Index schema 8** records, for each imported root, the filesystem's
+  `mmlsfs -S` setting from its listing. Added in place on first use; roots
+  imported before it show "re-import to record it" in `doctor`.
 - **Index schema 7** adds each file's Storage Scale fileset and storage pool
   (NULL for scanned files). Added in place on first use.
 - **Index schema 6** records each root's source (`scan` or an imported
@@ -82,6 +85,10 @@ commit. It becomes `0.1.0` when that is tagged.
   rows the listing no longer contains -- only that fileset's, for a fileset
   listing, so a nested fileset's rows survive -- and an empty listing needs
   `--root`. Each file's fileset and storage pool are recorded.
+  Access times come with it, by the filesystem's recorded `mmlsfs -S` setting:
+  `relatime` and `no` give each file's last read and "never opened since it
+  changed" (dated to the listing); `yes` and unrecognised values give unknown.
+  `doctor` shows the setting for each imported root.
 - `cdm policy`: prints a script that lists an IBM Storage Scale fileset (or,
   with `--whole-filesystem`, a whole filesystem) with `mmapplypolicy -I defer`,
   for an administrator to run as root; cdm never runs it. The listing carries
