@@ -51,6 +51,8 @@ PROGRESS_SECONDS = 1.0
 
 # Keeps an existing hash only while the file it was computed against is
 # unchanged (same rule as scan.hash_for); anything else invalidates it.
+_ONLY_CDM_READ = ("(files.self_atime IS NOT NULL AND excluded.atime IS NOT NULL "
+                  "AND abs(excluded.atime - files.self_atime) < 0.000001)")
 _UPSERT = (
     "INSERT INTO files (host, root, path, parent, name, size, mtime, ctime, inode, "
     "                   type, seen_at, fileset, pool, atime, self_atime, "
@@ -60,8 +62,14 @@ _UPSERT = (
     "  root=excluded.root, parent=excluded.parent, name=excluded.name, "
     "  size=excluded.size, mtime=excluded.mtime, ctime=excluded.ctime, "
     "  inode=excluded.inode, type=excluded.type, seen_at=excluded.seen_at, "
-    "  fileset=excluded.fileset, pool=excluded.pool, atime=excluded.atime, "
-    "  self_atime=NULL, unopened_until=excluded.unopened_until, "
+    "  fileset=excluded.fileset, pool=excluded.pool, "
+    # cdm's own read (`cdm hash`) is not use: when the listing's atime is the
+    # one that read left behind -- to the microsecond, as listings report
+    # times -- the earlier last read and "never opened" date stand.
+    "  atime=CASE WHEN " + _ONLY_CDM_READ + " THEN files.atime ELSE excluded.atime END, "
+    "  unopened_until=CASE WHEN " + _ONLY_CDM_READ + " THEN files.unopened_until "
+    "                 ELSE excluded.unopened_until END, "
+    "  self_atime=CASE WHEN " + _ONLY_CDM_READ + " THEN files.self_atime END, "
     "  hash=CASE WHEN files.hash_size=excluded.size AND files.hash_mtime=excluded.mtime "
     "            THEN files.hash END, "
     "  hash_kind=CASE WHEN files.hash_size=excluded.size "

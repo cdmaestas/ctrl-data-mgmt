@@ -27,6 +27,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
+from . import hasher
 from . import roots as roots_mod
 from .shape import DAY, GB, MB, human
 
@@ -225,8 +226,16 @@ def _index_rules(idx: _Index, now: float) -> list[Suggestion]:
                 f"Last scanned {age:.0f} days ago; every answer about it is that old.",
                 NONE, action=f"cdm rescan {r['path']}"))
         if imported:
-            # Imported files are hashed by `cdm hash` (0.2.0), not by a rescan;
-            # until that exists there is nothing honest to suggest here.
+            # Imported files are hashed by `cdm hash` where they are mounted,
+            # and only those whose size matches another's need it.
+            pending = hasher.candidates(idx.conn, idx.host_params, root=r["path"])
+            if pending:
+                out.append(Suggestion(
+                    f"index.unhashed:{r['host']}:{r['path']}", f"Hash {r['path']}",
+                    f"{pending:,} imported file(s) share a size with another and are "
+                    f"unhashed, so duplicate findings there are incomplete.",
+                    NONE, action=f"cdm hash --root {r['path']}  (on a node that "
+                                 f"mounts it)"))
             continue
         files, hashed, stale = idx.conn.execute(
             "SELECT COUNT(*), COUNT(hash), "

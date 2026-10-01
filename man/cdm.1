@@ -96,6 +96,12 @@ for an administrator to run. See
 Show the getting\-started checklist and what to do next. See
 .BR GUIDE .
 .TP
+.BI "hash " [ options ]
+Hash indexed files that share a size with another indexed file and have no
+valid hash \(em typically an imported Storage Scale listing, whose files a
+listing cannot hash. Run it where the files are mounted. See
+.BR HASHING .
+.TP
 .BI "storage " [ options ]
 Files and bytes by Storage Scale storage pool and by fileset, from imported
 listings, with names. See
@@ -267,6 +273,35 @@ Each hash also records the size and mtime it was computed against. A file
 modified after it was hashed is reported as
 .B STALE
 rather than silently returning a hash that is no longer true.
+.SS "cdm hash"
+Hashes files after the fact: files of a scan made without
+.BR \-\-checksum ,
+or of an imported listing, which carries no contents. It reads only files whose
+size matches at least one other indexed file \(em across this machine's scans
+and every imported listing \(em because a file of a size no other file has
+cannot be a duplicate; on a large filesystem that skips most files. A valid
+hash of the requested kind is kept, so a rerun resumes where the last one
+stopped. A file whose size or modification time no longer matches the index
+is not hashed and is reported, since the hash would describe content the index
+has not seen: re\-import or rescan first. A file that is not on this machine is
+counted, not an error. Its own reads are not counted as use: see
+.BR "ACCESS TIMES" .
+.TP
+.BI \-\-root " path" ", " \-\-fileset " name"
+Only files under
+.IR path ,
+or in this Storage Scale fileset.
+.TP
+.B \-\-full
+Hash every byte instead of both ends; a separate kind, as for
+.BR \-\-full\-checksum .
+.TP
+.BI \-\-min\-size " size"
+Skip smaller files.
+.TP
+.BR \-\-progress " [" \fIsecs\fR ]
+As for
+.BR scan .
 .SH CONCURRENCY
 Walking a filesystem is latency\-bound, not CPU\-bound, and CPython releases the
 interpreter lock around
@@ -593,7 +628,10 @@ that is empty removes everything under the root, so it needs an explicit
 .BR \-\-root .
 Rows are updated in place, and a file keeps its hash while its size and
 modification time are unchanged. The fileset and storage pool of each file are
-recorded. Hashing imported files follows in 0.2.0.
+recorded. An imported listing carries no file contents; hash it with
+.B "cdm hash"
+on a node that mounts the filesystem (see
+.BR HASHING ).
 .PP
 Access times follow the filesystem's
 .B "mmlsfs \-S"

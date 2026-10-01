@@ -216,8 +216,19 @@ with Storage Scale's default `-S relatime` (or `no`), each file's last read and
 whether it has been opened since it changed are recorded, so `find
 --accessed-before`, `find --unopened` and `suggest` work on cluster data; with
 `-S yes` (updates suppressed) they are recorded as unknown. `cdm doctor` shows
-which applies. Hashing imported data is the next step on the
-[roadmap](docs/roadmap.md).
+which applies.
+
+A listing carries no file contents, so duplicates need one more step, on a
+node that mounts the filesystem:
+
+```bash
+cdm hash --root /gpfs/fs1/proj     # then: cdm dupes
+```
+
+It reads only files whose size matches another indexed file's — a file of a
+unique size can't be a duplicate — and keeps valid hashes, so a rerun resumes.
+Its own reads don't count as use: the next import keeps the earlier last-read
+time.
 
 ## Last access time
 
