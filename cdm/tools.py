@@ -32,6 +32,7 @@ from typing import Any
 
 from . import db, paths, query, shape
 from . import guide as guide_mod
+from . import roots as roots_mod
 from . import suggest as suggest_mod
 
 MAX_ROWS = 500
@@ -196,6 +197,10 @@ class Catalog:
     def _open(self):
         return closing(db.connect_readonly(self.index))
 
+    def _hosts(self, conn) -> tuple[str, ...]:
+        """This machine plus every imported Storage Scale listing: see roots.py."""
+        return roots_mod.visible_hosts(conn, self.host)
+
     def _root(self, conn, root: str | None) -> str | None:
         """Accept only a known root, verbatim.
 
@@ -205,8 +210,9 @@ class Catalog:
         """
         if root is None:
             return None
+        where, params = roots_mod.host_sql(self._hosts(conn))
         known = [r[0] for r in conn.execute(
-            "SELECT path FROM roots WHERE host = ? ORDER BY path", (self.host,))]
+            f"SELECT path FROM roots WHERE {where} ORDER BY path", params)]
         # Roots are stored resolved, so on macOS /tmp/x was recorded as
         # /private/tmp/x. Accept either spelling of a real root.
         spellings = (os.path.normpath(os.path.expanduser(root)),
@@ -220,7 +226,7 @@ class Catalog:
 
     def summary(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
-            out = shape.summary(conn, host=self.host, root=self._root(conn, root))
+            out = shape.summary(conn, host=self._hosts(conn), root=self._root(conn, root))
         steps = ["Call `suggest` for a ranked list of what is worth doing.",
                  "Call `guide` if the user is new, or asks what to do next."]
         if any((r["last_scan_age_days"] or 0) >= suggest_mod.STALE_SCAN_DAYS
@@ -233,7 +239,7 @@ class Catalog:
 
     def size_histogram(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
-            out = shape.size_histogram(conn, host=self.host,
+            out = shape.size_histogram(conn, host=self._hosts(conn),
                                        root=self._root(conn, root))
         return _next(out, ["`extensions` shows what kind of data the space is.",
                            *(["`find` with larger_than lists the biggest files."]
@@ -241,7 +247,7 @@ class Catalog:
 
     def age_histogram(self, root: str | None = None, by: str = "mtime") -> dict[str, Any]:
         with self._open() as conn:
-            out = shape.age_histogram(conn, host=self.host,
+            out = shape.age_histogram(conn, host=self._hosts(conn),
                                       root=self._root(conn, root), by=by)
         return _next(out, ["Call again with by='atime' for last access; by='mtime' "
                            "is last modification." if by == "mtime" else
@@ -253,7 +259,7 @@ class Catalog:
 
     def extensions(self, root: str | None = None, limit: int = 20) -> dict[str, Any]:
         with self._open() as conn:
-            out = shape.extensions(conn, host=self.host, root=self._root(conn, root),
+            out = shape.extensions(conn, host=self._hosts(conn), root=self._root(conn, root),
                                    limit=max(1, min(limit, 200)))
         return _next(out, ["`find` with name='*.<ext>' lists files of one type."]
                      if self.expose_names else
@@ -261,7 +267,7 @@ class Catalog:
 
     def duplicates_summary(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
-            out = shape.duplicates_summary(conn, host=self.host,
+            out = shape.duplicates_summary(conn, host=self._hosts(conn),
                                            root=self._root(conn, root))
         cov = out["coverage"]
         steps = []
@@ -276,7 +282,7 @@ class Catalog:
 
     def guide(self, root: str | None = None) -> dict[str, Any]:
         with self._open() as conn:
-            out = guide_mod.guide(conn, host=self.host, root=self._root(conn, root))
+            out = guide_mod.guide(conn, host=self._hosts(conn), root=self._root(conn, root))
         return _next(out, ["Walk the user through the `next` step: why, command, "
                            "what they will see. They run it; you do not.",
                            "Call `guide` again after they act, to confirm it "
@@ -286,7 +292,7 @@ class Catalog:
                 limit: int = 20) -> dict[str, Any]:
         with self._open() as conn:
             out = suggest_mod.suggest(
-                conn, host=self.host, root=self._root(conn, root),
+                conn, host=self._hosts(conn), root=self._root(conn, root),
                 names=self.expose_names, older_than_days=max(0, older_than_days),
                 limit=max(1, min(limit, 100)))
         steps = ["Present housekeeping (risk none) first, then safe, then review. "
@@ -312,7 +318,7 @@ class Catalog:
         limit = max(1, min(limit, MAX_ROWS))
         with self._open() as conn:
             rows = query.find(
-                conn, host=self.host, root=self._root(conn, root), name=name,
+                conn, host=self._hosts(conn), root=self._root(conn, root), name=name,
                 iname=iname, kind=kind,
                 larger_than=query.parse_size(larger_than) if larger_than else None,
                 smaller_than=query.parse_size(smaller_than) if smaller_than else None,
@@ -335,7 +341,7 @@ class Catalog:
         limit = max(1, min(limit, MAX_ROWS))
         with self._open() as conn:
             rows = query.disk_usage(conn, path, depth=max(1, depth),
-                                    host=self.host, limit=limit)
+                                    host=self._hosts(conn), limit=limit)
         return _next({"results": [{"path": r["path"], "files": r["files"],
                                    "bytes": r["bytes"], "size": shape.human(r["bytes"])}
                                   for r in rows]},
@@ -345,7 +351,7 @@ class Catalog:
     def dupes(self, min_size: str = "1", limit: int = 20) -> dict[str, Any]:
         limit = max(1, min(limit, MAX_ROWS))
         with self._open() as conn:
-            groups = query.dupe_groups(conn, host=self.host,
+            groups = query.dupe_groups(conn, host=self._hosts(conn),
                                        min_size=query.parse_size(min_size),
                                        limit=limit)
         return _next({"groups": [{
@@ -358,7 +364,7 @@ class Catalog:
 
     def stat(self, path: str) -> dict[str, Any]:
         with self._open() as conn:
-            row = query.stat_one(conn, path, host=self.host)
+            row = query.stat_one(conn, path, host=self._hosts(conn))
         if row is None:
             return {"found": False, "path": path}
         return {"found": True, **_file_row(row), "root": row["root"],
@@ -376,9 +382,10 @@ class Catalog:
         """
         lines = [f"cdm mcp: serving {self.index} (read-only) for host {self.host}"]
         with self._open() as conn:
+            where, params = roots_mod.host_sql(self._hosts(conn))
             roots = conn.execute(
-                "SELECT path, last_scan FROM roots WHERE host = ? ORDER BY path",
-                (self.host,)).fetchall()
+                f"SELECT host, path, last_scan, source FROM roots WHERE {where} "
+                f"ORDER BY path", params).fetchall()
         if not roots:
             lines.append("cdm mcp: WARNING the index has no roots for this host; "
                          "every answer will be empty")
@@ -388,7 +395,9 @@ class Catalog:
                 days = (time.time() - datetime.fromisoformat(
                     r["last_scan"]).timestamp()) / 86400
                 age = f" (last scan {days:.1f} days ago)"
-            lines.append(f"cdm mcp:   root {r['path']}{age}")
+            origin = (f" (imported listing, {r['host']})"
+                      if r["source"] == roots_mod.POLICY else "")
+            lines.append(f"cdm mcp:   root {r['path']}{origin}{age}")
         lines.append(f"cdm mcp: tools: {', '.join(tool_names(expose_names))}")
         if expose_names:
             lines.append("cdm mcp: WARNING --expose-names: file and directory names "

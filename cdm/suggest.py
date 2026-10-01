@@ -144,11 +144,16 @@ class Suggestion:
 
 
 class _Index:
-    """Queries the rules share, scoped to one host and optionally one root."""
+    """Queries the rules share, scoped to some hosts and optionally one root.
 
-    def __init__(self, conn, host: str, root: str | None):
-        self.conn, self.host, self.root = conn, host, root
-        self.scope, self.params = "host = ?", [host]
+    `host` is one name or several: this machine plus imported listings
+    (roots.visible_hosts).
+    """
+
+    def __init__(self, conn, host, root: str | None):
+        self.conn, self.root = conn, root
+        self.hosts, self.host_params = roots_mod.host_sql(host)
+        self.scope, self.params = self.hosts, list(self.host_params)
         if root is not None:
             self.scope += " AND " + roots_mod.scope_sql()
             self.params += roots_mod.scope_params(root)
@@ -159,16 +164,16 @@ class _Index:
             self.params).fetchall()
 
     def exists(self, path: str) -> bool:
-        return self.conn.execute("SELECT 1 FROM files WHERE host = ? AND path = ?",
-                                 (self.host, path)).fetchone() is not None
+        return self.conn.execute(f"SELECT 1 FROM files WHERE {self.hosts} AND path = ?",
+                                 (*self.host_params, path)).fetchone() is not None
 
     def under(self, directory: str):
         """(files, bytes, newest mtime, newest atime) below a directory."""
         lo, hi = roots_mod.bounds(directory)
         r = self.conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(size), 0), MAX(mtime), MAX(atime) FROM files "
-            "WHERE host = ? AND path >= ? AND path < ? AND type = 'file'",
-            (self.host, lo, hi)).fetchone()
+            f"SELECT COUNT(*), COALESCE(SUM(size), 0), MAX(mtime), MAX(atime) FROM files "
+            f"WHERE {self.hosts} AND path >= ? AND path < ? AND type = 'file'",
+            (*self.host_params, lo, hi)).fetchone()
         return r[0], r[1], r[2], r[3]
 
 
@@ -195,25 +200,39 @@ def _topmost(paths):
 
 def _index_rules(idx: _Index, now: float) -> list[Suggestion]:
     out = []
-    rwhere, rparams = "host = ?", [idx.host]
+    rwhere, rparams = idx.hosts, list(idx.host_params)
     if idx.root is not None:
         rwhere += " AND " + roots_mod.scope_sql("path")
         rparams += roots_mod.scope_params(idx.root)
     for r in idx.conn.execute(
-            f"SELECT path, last_scan FROM roots WHERE {rwhere} ORDER BY path", rparams):
+            f"SELECT host, path, last_scan, source FROM roots WHERE {rwhere} "
+            f"ORDER BY path", rparams):
         if r["last_scan"] is None:
             continue
+        imported = r["source"] == roots_mod.POLICY
         age = (now - datetime.fromisoformat(r["last_scan"]).timestamp()) / DAY
-        if age >= STALE_SCAN_DAYS:
+        if age >= STALE_SCAN_DAYS and imported:
+            # A listing is refreshed on the cluster, not by rescanning here.
+            out.append(Suggestion(
+                f"index.stale:{r['host']}:{r['path']}", f"Re-import {r['path']}",
+                f"Imported {age:.0f} days ago from a Storage Scale listing; every "
+                f"answer about it is that old.",
+                NONE, action="re-run its `cdm policy` script on the cluster, then "
+                             "`cdm import --policy` the new listing"))
+        elif age >= STALE_SCAN_DAYS:
             out.append(Suggestion(
                 f"index.stale:{r['path']}", f"Rescan {r['path']}",
                 f"Last scanned {age:.0f} days ago; every answer about it is that old.",
                 NONE, action=f"cdm rescan {r['path']}"))
+        if imported:
+            # Imported files are hashed by `cdm hash` (0.2.0), not by a rescan;
+            # until that exists there is nothing honest to suggest here.
+            continue
         files, hashed, stale = idx.conn.execute(
             "SELECT COUNT(*), COUNT(hash), "
             "       SUM(hash IS NOT NULL AND (hash_size != size OR hash_mtime != mtime)) "
             "FROM files WHERE host = ? AND root = ? AND type = 'file'",
-            (idx.host, r["path"])).fetchone()
+            (r["host"], r["path"])).fetchone()
         if files and hashed / files < MIN_HASH_COVERAGE:
             out.append(Suggestion(
                 f"index.unhashed:{r['path']}", f"Checksum {r['path']}",

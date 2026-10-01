@@ -81,6 +81,12 @@ List what is worth doing, ranked, with the command for each. Changes nothing.
 See
 .BR SUGGESTIONS .
 .TP
+.BI "import \-\-policy " file
+Load a Storage Scale listing, as written by the script that
+.BR "cdm policy" " prints,"
+into the index. See
+.BR "STORAGE SCALE" .
+.TP
 .BI "policy " options
 Print a script that lists an IBM Storage Scale fileset with the policy engine,
 for an administrator to run. See
@@ -502,9 +508,12 @@ The listing names every file it covers. Its name must end in
 .BR .raw ,
 which keeps it out of the repository (see
 .IR tests/fixtures/README.md );
-keep it private and delete it once imported. Reading it into the index,
+keep it private and delete it once imported with
 .BR "cdm import \-\-policy" ,
-is planned for 0.2.0 and not in this version.
+below.
+.PP
+Options of
+.BR "cdm policy" :
 .TP
 .BI \-\-device " fs"
 The Storage Scale filesystem device name. Required.
@@ -539,6 +548,41 @@ and
 .B \-
 \(em because they are written into a script run as root and into policy SQL;
 anything else is refused rather than escaped.
+.PP
+.B "cdm import \-\-policy"
+.I file
+reads the listing into the index. It first reads the whole file and checks it
+is complete \(em header, every line well formed, end marker present and
+matching the row count \(em and only then writes, in one transaction: a
+truncated or damaged listing is refused and the index is not touched. Rows are
+recorded under a logical host,
+.IB filesystem @ cluster ,
+so listings taken from any node line up, and the root is marked as an
+imported listing. Every command \(em
+.BR find ,
+.BR du ,
+.BR dupes ,
+.BR stat ,
+.BR suggest ,
+.B guide
+and the MCP tools \(em covers this machine's scans and every imported listing
+together;
+.B \-\-all\-hosts
+adds rows from other machines. A re\-import updates rows and keeps a file's hash
+while its size and modification time are unchanged. In this version it does
+not yet remove rows for files that are gone, record access times, store fileset
+and pool, or hash; those follow in 0.2.0.
+.TP
+.BI \-\-policy " file" .raw
+The listing. Required.
+.TP
+.BI \-\-root " path"
+The root to record it under. Default: the directory every listed path shares,
+which for a fileset is its junction. Every entry must lie inside it.
+.TP
+.BR \-\-progress " [" \fIsecs\fR ]
+As for
+.BR scan .
 .SH MCP SERVER
 .B "cdm mcp"
 lets an MCP client such as Claude Code or Claude Desktop answer plain\-language
